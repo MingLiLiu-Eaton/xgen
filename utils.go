@@ -253,23 +253,6 @@ func goPackageName(packageName string) string {
 	return sanitizeGoIdentifier(path.Base(goImportBasePath(packageName)))
 }
 
-func goNamespaceTypePrefix(namespace string) string {
-	if namespace == "" {
-		return ""
-	}
-	hasher := fnv.New32a()
-	_, _ = hasher.Write([]byte(namespace))
-
-	label := genGoTypeName(namespaceTypeLabel(namespace))
-	if label == "" {
-		label = "Ns"
-	}
-	if firstRune, _ := utf8.DecodeRuneInString(label); unicode.IsDigit(firstRune) {
-		label = "Ns" + label
-	}
-	return fmt.Sprintf("%s%04X", label, hasher.Sum32()&0xFFFF)
-}
-
 func namespaceTypeLabel(namespace string) string {
 	token := ""
 	for _, part := range strings.FieldsFunc(strings.TrimSpace(namespace), func(r rune) bool {
@@ -289,6 +272,40 @@ func namespaceTypeLabel(namespace string) string {
 		return token
 	}
 	return sanitizeGoIdentifier(namespace)
+}
+
+func normalizeNamespacePrefixCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(unicode.ToLower(r))
+			lastUnderscore = false
+			continue
+		}
+		if builder.Len() == 0 || lastUnderscore {
+			continue
+		}
+		builder.WriteRune('_')
+		lastUnderscore = true
+	}
+	return strings.Trim(builder.String(), "_")
+}
+
+func namespacePrefixInUse(prefixMap map[string]string, candidate, namespace string) bool {
+	for existingNamespace, existingCandidate := range prefixMap {
+		if existingNamespace == namespace {
+			continue
+		}
+		if strings.EqualFold(existingCandidate, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func goNamespacePackageName(packageName, namespace string) string {

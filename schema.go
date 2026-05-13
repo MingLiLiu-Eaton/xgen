@@ -8,7 +8,11 @@
 
 package xgen
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+	"fmt"
+	"strings"
+)
 
 func (opt *Options) prepareLocalNameNSMap(element xml.StartElement) {
 	for _, ele := range element.Attr {
@@ -43,4 +47,49 @@ func (opt *Options) prepareNSSchemaLocationMap(element xml.StartElement) {
 
 func (opt *Options) parseNS(str string) (ns string) {
 	return opt.LocalNameNSMap[getNSPrefix(str)]
+}
+
+func (opt *Options) prepareNamespacePrefixMap() {
+	if opt.NamespacePrefixMap == nil {
+		opt.NamespacePrefixMap = make(map[string]string)
+	}
+	for prefix, namespace := range opt.LocalNameNSMap {
+		opt.registerNamespacePrefix(namespace, prefix)
+	}
+	opt.registerNamespacePrefix(opt.TargetNamespace, "")
+}
+
+func (opt *Options) registerNamespacePrefix(namespace, declaredPrefix string) {
+	if namespace == "" {
+		return
+	}
+	if _, ok := opt.NamespacePrefixMap[namespace]; ok {
+		return
+	}
+	candidate := normalizeNamespacePrefixCandidate(declaredPrefix)
+	if candidate == "" {
+		candidate = normalizeNamespacePrefixCandidate(namespaceTypeLabel(namespace))
+	}
+	if candidate == "" {
+		candidate = "ns"
+	}
+	if !namespacePrefixInUse(opt.NamespacePrefixMap, candidate, namespace) {
+		opt.NamespacePrefixMap[namespace] = candidate
+		return
+	}
+	label := normalizeNamespacePrefixCandidate(namespaceTypeLabel(namespace))
+	if label != "" && !strings.EqualFold(candidate, label) {
+		combined := normalizeNamespacePrefixCandidate(candidate + "_" + label)
+		if combined != "" && !namespacePrefixInUse(opt.NamespacePrefixMap, combined, namespace) {
+			opt.NamespacePrefixMap[namespace] = combined
+			return
+		}
+	}
+	for suffix := 2; ; suffix++ {
+		next := fmt.Sprintf("%s_%d", candidate, suffix)
+		if !namespacePrefixInUse(opt.NamespacePrefixMap, next, namespace) {
+			opt.NamespacePrefixMap[namespace] = next
+			return
+		}
+	}
 }

@@ -6,76 +6,73 @@ import (
 	"encoding/xml"
 )
 
-// Example0514MyType1 ...
-type Example0514MyType1 string
+// HereMyType1 ...
+type HereMyType1 string
 
-// Example0514MyType2 is appinfo-myType2-appinfo
-type Example0514MyType2 struct {
-	XMLName    xml.Name `xml:"myType2"`
-	LengthAttr *int     `xml:"length,attr"`
-	Value      string   `xml:",chardata"`
+// HereMyType2 is appinfo-myType2-appinfo
+type HereMyType2 struct {
+	LengthAttr *int   `xml:"length,attr"`
+	Value      string `xml:",chardata"`
 }
 
-// Example0514MyType3 ...
-type Example0514MyType3 struct {
-	XMLName    xml.Name `xml:"myType3"`
-	LengthAttr *int     `xml:"length,attr"`
-	Value      string   `xml:",chardata"`
+// HereMyType3 ...
+type HereMyType3 struct {
+	LengthAttr *int   `xml:"length,attr"`
+	Value      string `xml:",chardata"`
 }
 
-// Example0514MyType4 ...
-type Example0514MyType4 struct {
-	XMLName   xml.Name `xml:"myType4"`
-	Title     string   `xml:"title"`
-	Blob      string   `xml:"blob"`
-	Timestamp string   `xml:"timestamp"`
-	Metadata  *string  `xml:"metadata"`
+// HereMyType4 ...
+type HereMyType4 struct {
+	Title     string  `xml:"title"`
+	Blob      string  `xml:"blob"`
+	Timestamp string  `xml:"timestamp"`
+	Metadata  *string `xml:"metadata"`
 }
 
-// Example0514MyType5 ...
-type Example0514MyType5 string
+// HereMyType5 ...
+type HereMyType5 string
 
-// Example0514MyType6 ...
-type Example0514MyType6 struct {
+// HereMyType6 ...
+type HereMyType6 struct {
 	CodeAttr       *string `xml:"code,attr"`
 	IdentifierAttr *int    `xml:"identifier,attr"`
 }
 
-// Example0514MyType7 ...
-type Example0514MyType7 struct {
+// HereMyType7 ...
+type HereMyType7 struct {
 	OriginAttr string `xml:"origin,attr"`
 	Value      string `xml:",chardata"`
 }
 
-// Example0514MyType8 ...
-type Example0514MyType8 struct {
-	Title []*Example0514MyType4 `xml:"title"`
+// HereMyType8 ...
+type HereMyType8 struct {
+	Title []*HereMyType4 `xml:"title"`
 }
 
-// Example0514MyType9 ...
-type Example0514MyType9 struct {
-	Title []*Example0514MyType4 `xml:"title"`
+// HereMyType9 ...
+type HereMyType9 struct {
+	Title []*HereMyType4 `xml:"title"`
 }
 
-// Example0514MyType10 ...
-type Example0514MyType10 struct {
-	Title *Example0514MyType4 `xml:"title"`
+// HereMyType10 ...
+type HereMyType10 struct {
+	Title *HereMyType4 `xml:"title"`
 }
 
-// Example0514MyType11 ...
-type Example0514MyType11 struct {
-	Option1 *int                 `xml:"option1"`
-	Option2 *string              `xml:"option2"`
-	Option3 *Example0514MyType10 `xml:"option3"`
+// HereMyType11 ...
+type HereMyType11 struct {
+	Option1 *int          `xml:"option1"`
+	Option2 *string       `xml:"option2"`
+	Option3 *HereMyType10 `xml:"option3"`
 }
 
-// Example0514TopLevel ...
-type Example0514TopLevel struct {
-	XMLName         xml.Name              `xml:"TopLevel"`
-	CostAttr        *float64              `xml:"cost,attr"`
-	LastUpdatedAttr string                `xml:"LastUpdated,attr"`
-	Nested          *Example0514MyType7   `xml:"nested"`
-	MyType1         []string              `xml:"myType1"`
-	MyType2         []*Example0514MyType2 `xml:"myType2"`
-	*Example0514MyType6
+// HereTopLevel ...
+type HereTopLevel struct {
+	XMLName         xml.Name       `xml:"TopLevel"`
+	CostAttr        *float64       `xml:"cost,attr"`
+	LastUpdatedAttr string         `xml:"LastUpdated,attr"`
+	Nested          *HereMyType7   `xml:"nested"`
+	MyType1         []string       `xml:"myType1"`
+	MyType2         []*HereMyType2 `xml:"myType2"`
+	*HereMyType6
 }

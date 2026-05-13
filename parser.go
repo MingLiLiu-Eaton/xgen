@@ -31,6 +31,7 @@ type Options struct {
 	Lang                string
 	Package             string
 	TargetNamespace     string
+	NamespacePrefixMap  map[string]string
 	IncludeMap          map[string]bool
 	LocalNameNSMap      map[string]string
 	NSSchemaLocationMap map[string]string
@@ -67,6 +68,9 @@ func NewParser(options *Options) *Options {
 // parse will fetch schema used in <import> or <include> statements.
 func (opt *Options) Parse() (err error) {
 	opt.FileDir = filepath.Dir(opt.FilePath)
+	if opt.NamespacePrefixMap == nil {
+		opt.NamespacePrefixMap = make(map[string]string)
+	}
 	var fi os.FileInfo
 	fi, err = os.Stat(opt.FilePath)
 	if err != nil {
@@ -183,8 +187,10 @@ func (opt *Options) Parse() (err error) {
 			Lang:            opt.Lang,
 			Package:         packageName,
 			TargetNamespace: opt.TargetNamespace,
+			NamespacePrefix: cloneStringMap(opt.NamespacePrefixMap),
 			LocalNameNSMap:  cloneStringMap(opt.LocalNameNSMap),
 			File:            path,
+			ParseFileMap:    opt.ParseFileMap,
 			ProtoTree:       opt.ProtoTree,
 			StructAST:       map[string]string{},
 			Hook:            opt.Hook,
@@ -269,6 +275,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 				Lang:                opt.Lang,
 				IncludeMap:          cloneBoolMap(opt.IncludeMap),
 				LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+				NamespacePrefixMap:  opt.NamespacePrefixMap,
 				NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 				ParseFileList:       opt.ParseFileList,
 				ParseFileMap:        opt.ParseFileMap,
@@ -301,6 +308,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 			Lang:                opt.Lang,
 			IncludeMap:          cloneBoolMap(opt.IncludeMap),
 			LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+			NamespacePrefixMap:  opt.NamespacePrefixMap,
 			NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 			ParseFileList:       opt.ParseFileList,
 			ParseFileMap:        opt.ParseFileMap,
@@ -327,6 +335,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		Lang:                opt.Lang,
 		IncludeMap:          cloneBoolMap(opt.IncludeMap),
 		LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+		NamespacePrefixMap:  opt.NamespacePrefixMap,
 		NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 		ParseFileList:       opt.ParseFileList,
 		ParseFileMap:        opt.ParseFileMap,

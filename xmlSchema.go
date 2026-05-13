@@ -20,5 +20,6 @@ func (opt *Options) OnSchema(ele xml.StartElement, protoTree []interface{}) (err
 			break
 		}
 	}
+	opt.prepareNamespacePrefixMap()
 	return
 }

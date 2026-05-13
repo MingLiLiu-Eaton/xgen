@@ -26,7 +26,9 @@ type CodeGenerator struct {
 	ImportTime        bool // For Go language
 	ImportEncodingXML bool // For Go language
 	TargetNamespace   string
+	NamespacePrefix   map[string]string
 	LocalNameNSMap    map[string]string
+	ParseFileMap      map[string][]interface{}
 	ProtoTree         []interface{}
 	StructAST         map[string]string
 	Hook              Hook
@@ -155,6 +157,14 @@ func (gen *CodeGenerator) goTypeNamespace(name string) string {
 	return gen.TargetNamespace
 }
 
+func (gen *CodeGenerator) goNamespacePrefix(namespace string) string {
+	prefix := normalizeNamespacePrefixCandidate(gen.NamespacePrefix[namespace])
+	if prefix == "" {
+		prefix = normalizeNamespacePrefixCandidate(namespaceTypeLabel(namespace))
+	}
+	return genGoTypeName(prefix)
+}
+
 func (gen *CodeGenerator) goTypeIdentifier(namespace, name string) string {
 	if _, ok := goBuildinType[name]; ok {
 		return name
@@ -163,7 +173,7 @@ func (gen *CodeGenerator) goTypeIdentifier(namespace, name string) string {
 	if fieldType == "" {
 		return ""
 	}
-	if prefix := goNamespaceTypePrefix(namespace); prefix != "" {
+	if prefix := gen.goNamespacePrefix(namespace); prefix != "" && !strings.HasPrefix(strings.ToLower(fieldType), strings.ToLower(prefix)) {
 		return prefix + fieldType
 	}
 	return fieldType
@@ -184,7 +194,54 @@ func (gen *CodeGenerator) goDeclarationName(name string, unique bool) string {
 }
 
 func shouldAddGoXMLName(name string, anonymous bool) bool {
-	return anonymous || genGoTypeName(name) != name
+	return anonymous || strings.IndexFunc(name, splitter) >= 0
+}
+
+func (gen *CodeGenerator) goXMLName(name string, anonymous bool) string {
+	if !anonymous {
+		return name
+	}
+	prefix := normalizeNamespacePrefixCandidate(gen.NamespacePrefix[gen.TargetNamespace])
+	if prefix == "" {
+		return name
+	}
+	qualifiedName := fmt.Sprintf("%s:%s", prefix, name)
+	if gen.hasQualifiedElementReference(qualifiedName) {
+		return qualifiedName
+	}
+	return name
+}
+
+func (gen *CodeGenerator) hasQualifiedElementReference(name string) bool {
+	if hasQualifiedElementReferenceInTree(name, gen.ProtoTree) {
+		return true
+	}
+	for _, tree := range gen.ParseFileMap {
+		if hasQualifiedElementReferenceInTree(name, tree) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasQualifiedElementReferenceInTree(name string, protoTree []interface{}) bool {
+	for _, ele := range protoTree {
+		switch v := ele.(type) {
+		case *ComplexType:
+			for _, element := range v.Elements {
+				if element.Name == name {
+					return true
+				}
+			}
+		case *Group:
+			for _, element := range v.Elements {
+				if element.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (gen *CodeGenerator) goReferenceType(name string) string {
@@ -229,7 +286,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 			fieldName := gen.goDeclarationName(v.Name, true)
 			if shouldAddGoXMLName(v.Name, v.Anonymous) {
 				gen.ImportEncodingXML = true
-				content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
+				content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Anonymous))
 			}
 			for _, member := range toSortedPairs(v.MemberTypes) {
 				memberName := member.key
@@ -272,7 +329,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		fieldName := gen.goDeclarationName(v.Name, true)
 		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
-			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
+			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Anonymous))
 		}
 		for _, attrGroup := range v.AttributeGroup {
 			fieldType := getBasefromSimpleType(attrGroup.Ref, gen.ProtoTree)

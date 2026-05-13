@@ -332,7 +332,7 @@ func TestHookSkipAndModify(t *testing.T) {
 	require.NoError(t, err)
 
 	generatedCode := string(content)
-	basePrefix := goNamespaceTypePrefix("http://example.org/")
+	basePrefix := "Here"
 
 	// Verify hook comment was added
 	if hook.ModifiedContent {
@@ -813,9 +813,9 @@ func TestParseGoPrefixesNamespacesInSinglePackage(t *testing.T) {
 	})
 	require.NoError(t, parser.Parse())
 
-	alphaPrefix := goNamespaceTypePrefix("http://example.com/alpha")
-	betaPrefix := goNamespaceTypePrefix("http://example.com/beta")
-	rootPrefix := goNamespaceTypePrefix("http://example.com/root")
+	alphaPrefix := "Alpha"
+	betaPrefix := "Beta"
+	rootPrefix := "Root"
 
 	rootGenerated, err := os.ReadFile(filepath.Join(outputDir, "root.xsd.go"))
 	require.NoError(t, err)
@@ -838,6 +838,88 @@ func TestParseGoPrefixesNamespacesInSinglePackage(t *testing.T) {
 
 	goMod := "module schema\n\ngo 1.22\n"
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func TestParseGoUsesReadablePrefixesAndAvoidsQNameXMLNameConflict(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-oadr-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:oadr="http://openadr.org/oadr-2.0b/2012/07"
+	targetNamespace="http://openadr.org/oadr-2.0b/2012/07"
+	elementFormDefault="qualified">
+	<xs:element name="oadrPayload">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="oadr:oadrSignedObject"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:element name="oadrSignedObject">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="payloadValue" type="xs:string"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "oadr.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "oadr.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "oadr.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type OadrPayload struct")
+	assert.Contains(t, code, "*OadrSignedObject `xml:\"oadr:oadrSignedObject\"`")
+	assert.Contains(t, code, "type OadrSignedObject struct")
+	assert.NotContains(t, code, "type Ns")
+	assert.NotContains(t, code, "XMLName                           xml.Name                                   `xml:\"oadrSignedObject\"`")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestQNameMarshalUnmarshal(t *testing.T) {
+		input := []byte("<oadrPayload xmlns:oadr=\"http://openadr.org/oadr-2.0b/2012/07\"><oadr:oadrSignedObject><payloadValue>x</payloadValue></oadr:oadrSignedObject></oadrPayload>")
+		var payload OadrPayload
+		if err := xml.Unmarshal(input, &payload); err != nil {
+			t.Fatal(err)
+		}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "oadr_runtime_test.go"), []byte(runtimeTest), 0o644))
 
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = outputDir
