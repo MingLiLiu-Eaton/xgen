@@ -39,6 +39,35 @@ func TestParseGoExternal(t *testing.T) {
 	testParseForSource(t, "Go", "go", "go", externalFixtureDir, true, nil)
 }
 
+func TestParseGoFromInputDirOnly(t *testing.T) {
+	codeDir := filepath.Join(testFixtureDir, "go")
+	tempDir, err := ioutil.TempDir(codeDir, "inputdir-output-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(testFixtureDir, "xsd")
+	parser := NewParser(&Options{
+		InputDir:            inputDir,
+		OutputDir:           tempDir,
+		Lang:                "Go",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+	})
+	require.NoError(t, parser.Parse())
+
+	actualGenerated, err := ioutil.ReadFile(filepath.Join(tempDir, "base64.xsd.go"))
+	require.NoError(t, err)
+
+	expectedGenerated, err := ioutil.ReadFile(filepath.Join(codeDir, "base64.xsd.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expectedGenerated), string(actualGenerated))
+}
+
 // testParseForSource runs parsing tests for a given language. The sourceDirectory specifies the root of the
 // input for the tests. The expected structure of the sourceDirectory is as follows:
 //

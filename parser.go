@@ -68,6 +68,12 @@ func NewParser(options *Options) *Options {
 // documents by given options. If value of the property extract is false,
 // parse will fetch schema used in <import> or <include> statements.
 func (opt *Options) Parse() (err error) {
+	if opt.FilePath == "" {
+		opt.FilePath = opt.InputDir
+	}
+	if opt.FilePath == "" {
+		return fmt.Errorf("must specify file path or input directory")
+	}
 	opt.FileDir = filepath.Dir(opt.FilePath)
 	if opt.NamespacePrefixMap == nil {
 		opt.NamespacePrefixMap = make(map[string]string)
@@ -91,7 +97,7 @@ func (opt *Options) Parse() (err error) {
 		return
 	}
 	if fi.IsDir() {
-		return
+		return opt.parseDirectory()
 	}
 	var xmlFile *os.File
 	xmlFile, err = os.Open(opt.FilePath)
@@ -216,6 +222,44 @@ func (opt *Options) Parse() (err error) {
 		}
 	}
 	return
+}
+
+func (opt *Options) parseDirectory() error {
+	files, err := GetFileList(opt.FilePath)
+	if err != nil {
+		return err
+	}
+	inputDir := opt.InputDir
+	if inputDir == "" {
+		inputDir = opt.FilePath
+	}
+	for _, file := range files {
+		if filepath.Ext(file) != ".xsd" {
+			continue
+		}
+		parser := NewParser(&Options{
+			FilePath:            file,
+			InputDir:            inputDir,
+			OutputDir:           opt.OutputDir,
+			Extract:             opt.Extract,
+			Lang:                opt.Lang,
+			Package:             opt.Package,
+			NamespacePrefixMap:  opt.NamespacePrefixMap,
+			ReferencedElements:  opt.ReferencedElements,
+			IncludeMap:          make(map[string]bool),
+			LocalNameNSMap:      make(map[string]string),
+			NSSchemaLocationMap: make(map[string]string),
+			ParseFileList:       make(map[string]bool),
+			ParseFileMap:        make(map[string][]interface{}),
+			ProtoTree:           make([]interface{}, 0),
+			RemoteSchema:        opt.RemoteSchema,
+			Hook:                opt.Hook,
+		})
+		if err := parser.Parse(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (opt *Options) qualifyTypeReference(value string) string {
