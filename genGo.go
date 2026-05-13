@@ -24,6 +24,7 @@ type CodeGenerator struct {
 	Field             string
 	Package           string
 	ImportFmt         bool // For Go language
+	ImportStrconv     bool // For Go language
 	ImportTime        bool // For Go language
 	ImportEncodingXML bool // For Go language
 	TargetNamespace   string
@@ -99,6 +100,9 @@ func (gen *CodeGenerator) GenGo() error {
 	var importLines []string
 	if gen.ImportFmt {
 		importLines = append(importLines, "\t\"fmt\"")
+	}
+	if gen.ImportStrconv {
+		importLines = append(importLines, "\t\"strconv\"")
 	}
 	if gen.ImportTime {
 		importLines = append(importLines, "\t\"time\"")
@@ -329,22 +333,8 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 	}
 	if v.Union && len(v.MemberTypes) > 0 {
 		if _, ok := gen.StructAST[v.Name]; !ok {
-			content := " struct {\n"
 			fieldName := gen.goDeclarationName(v.Name, true)
-			if shouldAddGoXMLName(v.Name, v.Anonymous) {
-				gen.ImportEncodingXML = true
-				content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Anonymous))
-			}
-			for _, member := range toSortedPairs(v.MemberTypes) {
-				memberName := member.key
-				memberType := member.value
-
-				if memberType == "" { // fix order issue
-					memberType = getBasefromSimpleType(memberName, gen.ProtoTree)
-				}
-				content += fmt.Sprintf("\t%s\t%s\n", genGoFieldName(memberName, false), gen.goFieldType(memberType))
-			}
-			content += "}\n"
+			content := " string\n"
 			gen.StructAST[v.Name] = content
 
 			output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
@@ -352,6 +342,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 				gen.Hook.OnAddContent(gen, &output)
 			}
 			gen.Field += output
+			gen.Field += gen.goUnionValidationMethods(fieldName, v.MemberTypes)
 		}
 		return
 	}
@@ -524,13 +515,110 @@ func (v *%s) UnmarshalText(text []byte) error {
 `, validatorName, strings.Join(caseValues, ", "), errorFormat, typeName, validatorName, textExpr, typeName, textExpr, validatorName, typeName, validatorName, unmarshalAssignment)
 }
 
+func goSupportsUnionValidation(memberType string) bool {
+	switch memberType {
+	case "string", "bool", "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return true
+	default:
+		return false
+	}
+}
+
+func (gen *CodeGenerator) goUnionValidationMethods(typeName string, memberTypes map[string]string) string {
+	if len(memberTypes) == 0 {
+		return ""
+	}
+	memberNames := make([]string, 0, len(memberTypes))
+	validationChecks := make([]string, 0, len(memberTypes))
+	alwaysValid := false
+	for _, member := range toSortedPairs(memberTypes) {
+		memberName := member.key
+		memberType := member.value
+		if memberType == "" {
+			memberType = getBasefromSimpleType(memberName, gen.ProtoTree)
+		}
+		memberNames = append(memberNames, memberName)
+		if !goSupportsUnionValidation(memberType) {
+			continue
+		}
+		if memberType == "string" {
+			alwaysValid = true
+			continue
+		}
+		gen.ImportStrconv = true
+		switch memberType {
+		case "bool":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseBool(value); err == nil {\n\t\treturn nil\n\t}")
+		case "float32":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseFloat(value, 32); err == nil {\n\t\treturn nil\n\t}")
+		case "float64":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseFloat(value, 64); err == nil {\n\t\treturn nil\n\t}")
+		case "int":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseInt(value, 10, 0); err == nil {\n\t\treturn nil\n\t}")
+		case "int8":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseInt(value, 10, 8); err == nil {\n\t\treturn nil\n\t}")
+		case "int16":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseInt(value, 10, 16); err == nil {\n\t\treturn nil\n\t}")
+		case "int32":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseInt(value, 10, 32); err == nil {\n\t\treturn nil\n\t}")
+		case "int64":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseInt(value, 10, 64); err == nil {\n\t\treturn nil\n\t}")
+		case "uint":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseUint(value, 10, 0); err == nil {\n\t\treturn nil\n\t}")
+		case "uint8":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseUint(value, 10, 8); err == nil {\n\t\treturn nil\n\t}")
+		case "uint16":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseUint(value, 10, 16); err == nil {\n\t\treturn nil\n\t}")
+		case "uint32":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseUint(value, 10, 32); err == nil {\n\t\treturn nil\n\t}")
+		case "uint64":
+			validationChecks = append(validationChecks, "\tif _, err := strconv.ParseUint(value, 10, 64); err == nil {\n\t\treturn nil\n\t}")
+		}
+	}
+	validatorBody := strings.Join(validationChecks, "\n")
+	if alwaysValid || len(validationChecks) == 0 {
+		validatorBody = "\treturn nil"
+	} else {
+		gen.ImportFmt = true
+		validatorBody += fmt.Sprintf("\n\treturn fmt.Errorf(%q, value)", fmt.Sprintf("%s must match one of [%s], got %%q", typeName, strings.Join(memberNames, ", ")))
+	}
+	return fmt.Sprintf(`
+func validate%s(value string) error {
+%s
+}
+
+func (v %s) Validate() error {
+	return validate%s(string(v))
+}
+
+func (v %s) MarshalText() ([]byte, error) {
+	value := string(v)
+	if err := validate%s(value); err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (v *%s) UnmarshalText(text []byte) error {
+	value := string(text)
+	if err := validate%s(value); err != nil {
+		return err
+	}
+	*v = %s(value)
+	return nil
+}
+`, typeName, validatorBody, typeName, typeName, typeName, typeName, typeName, typeName, typeName)
+}
+
 func (gen *CodeGenerator) goEnsureInlineSimpleType(ownerTypeName, fieldName string, simpleType *SimpleType) string {
 	if simpleType == nil {
 		return ""
 	}
-	baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
-	if len(simpleType.Restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
-		return ""
+	if !simpleType.Union {
+		baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
+		if len(simpleType.Restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
+			return ""
+		}
 	}
 	helperName := ownerTypeName + fieldName
 	if _, ok := gen.StructAST[helperName]; ok {

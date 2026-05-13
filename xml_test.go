@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"io/ioutil"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,10 @@ func TestGeneratedGo(t *testing.T) {
 			xmlFileName:     "base64.xml",
 			receivingStruct: &schema.HereTopLevel{},
 		},
+		{
+			xmlFileName:     "union.xml",
+			receivingStruct: &schema.HereUnionTop{},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -47,7 +52,7 @@ func TestGeneratedGo(t *testing.T) {
 			remarshaled, err := xml.MarshalIndent(tc.receivingStruct, "", "    ")
 			require.NoError(t, err)
 
-			assert.Equal(t, string(input), string(remarshaled))
+			assert.Equal(t, strings.TrimSuffix(string(input), "\n"), string(remarshaled))
 		})
 	}
 }
@@ -74,6 +79,29 @@ func TestGeneratedGoRejectsInvalidInlineEnumDuringMarshal(t *testing.T) {
 	_, err := xml.Marshal(value)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HereMyType6CodeAttr")
+}
+
+func TestGeneratedGoRejectsInvalidUnionDuringUnmarshal(t *testing.T) {
+	input := []byte(`<UnionTop attr="maybe">
+    <value>true</value>
+</UnionTop>`)
+	var actual schema.HereUnionTop
+	err := xml.Unmarshal(input, &actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HereUnionValue")
+}
+
+func TestGeneratedGoRejectsInvalidUnionDuringMarshal(t *testing.T) {
+	attr := schema.HereUnionValue("maybe")
+	value := schema.HereUnionValue("true")
+	actual := &schema.HereUnionTop{
+		XMLName:  xml.Name{Local: "UnionTop"},
+		AttrAttr: &attr,
+		Value:    &value,
+	}
+	_, err := xml.Marshal(actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HereUnionValue")
 }
 
 func TestGenGoAddsValidationForRestrictedSimpleType(t *testing.T) {
@@ -110,6 +138,66 @@ func TestGenGoAddsValidationForRestrictedSimpleType(t *testing.T) {
 	assert.Contains(t, source, "func (v "+typeName+") Validate() error")
 	assert.Contains(t, source, "func (v "+typeName+") MarshalText() ([]byte, error)")
 	assert.Contains(t, source, "func (v *"+typeName+") UnmarshalText(text []byte) error")
+}
+
+func TestGenGoAddsTextMarshalingForUnionSimpleType(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "union"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name:        "unionValue",
+				Union:       true,
+				MemberTypes: map[string]string{"boolean": "bool", "int": "int"},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "union.go"))
+	require.NoError(t, err)
+
+	typeName := gen.goTypeIdentifier(gen.TargetNamespace, "unionValue")
+	source := string(output)
+	assert.Contains(t, source, "type "+typeName+" string")
+	assert.Contains(t, source, "func (v "+typeName+") Validate() error")
+	assert.Contains(t, source, "func (v "+typeName+") MarshalText() ([]byte, error)")
+	assert.Contains(t, source, "func (v *"+typeName+") UnmarshalText(text []byte) error")
+}
+
+func TestParseGoUnionFixture(t *testing.T) {
+	tempDir := t.TempDir()
+	inputDir := "testdata"
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "union.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           tempDir,
+		Lang:                "Go",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+	})
+	require.NoError(t, parser.Parse())
+
+	actualGenerated, err := ioutil.ReadFile(filepath.Join(tempDir, "union.xsd.go"))
+	require.NoError(t, err)
+
+	expectedGenerated, err := ioutil.ReadFile(filepath.Join("test", "go", "union.xsd.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expectedGenerated), string(actualGenerated))
 }
 
 func TestToTitle(t *testing.T) {

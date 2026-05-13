@@ -1,0 +1,14 @@
+<schema xmlns="http://www.w3.org/2001/XMLSchema" xmlns:here="http://example.org/union" targetNamespace="http://example.org/union">
+  <simpleType name="unionValue">
+    <union memberTypes="boolean int"/>
+  </simpleType>
+
+  <element name="UnionTop">
+    <complexType>
+      <sequence>
+        <element name="value" type="here:unionValue"/>
+      </sequence>
+      <attribute name="attr" type="here:unionValue" use="required"/>
+    </complexType>
+  </element>
+</schema>
