@@ -6,25 +6,25 @@ import (
 	"encoding/xml"
 )
 
-// MyType1 ...
-type MyType1 string
+// Example0514MyType1 ...
+type Example0514MyType1 string
 
-// MyType2 is appinfo-myType2-appinfo
-type MyType2 struct {
+// Example0514MyType2 is appinfo-myType2-appinfo
+type Example0514MyType2 struct {
 	XMLName    xml.Name `xml:"myType2"`
 	LengthAttr *int     `xml:"length,attr"`
 	Value      string   `xml:",chardata"`
 }
 
-// MyType3 ...
-type MyType3 struct {
+// Example0514MyType3 ...
+type Example0514MyType3 struct {
 	XMLName    xml.Name `xml:"myType3"`
 	LengthAttr *int     `xml:"length,attr"`
 	Value      string   `xml:",chardata"`
 }
 
-// MyType4 ...
-type MyType4 struct {
+// Example0514MyType4 ...
+type Example0514MyType4 struct {
 	XMLName   xml.Name `xml:"myType4"`
 	Title     string   `xml:"title"`
 	Blob      string   `xml:"blob"`
@@ -32,49 +32,50 @@ type MyType4 struct {
 	Metadata  *string  `xml:"metadata"`
 }
 
-// MyType5 ...
-type MyType5 string
+// Example0514MyType5 ...
+type Example0514MyType5 string
 
-// MyType6 ...
-type MyType6 struct {
+// Example0514MyType6 ...
+type Example0514MyType6 struct {
 	CodeAttr       *string `xml:"code,attr"`
 	IdentifierAttr *int    `xml:"identifier,attr"`
 }
 
-// MyType7 ...
-type MyType7 struct {
+// Example0514MyType7 ...
+type Example0514MyType7 struct {
 	OriginAttr string `xml:"origin,attr"`
 	Value      string `xml:",chardata"`
 }
 
-// MyType8 ...
-type MyType8 struct {
-	Title []*MyType4 `xml:"title"`
+// Example0514MyType8 ...
+type Example0514MyType8 struct {
+	Title []*Example0514MyType4 `xml:"title"`
 }
 
-// MyType9 ...
-type MyType9 struct {
-	Title []*MyType4 `xml:"title"`
+// Example0514MyType9 ...
+type Example0514MyType9 struct {
+	Title []*Example0514MyType4 `xml:"title"`
 }
 
-// MyType10 ...
-type MyType10 struct {
-	Title *MyType4 `xml:"title"`
+// Example0514MyType10 ...
+type Example0514MyType10 struct {
+	Title *Example0514MyType4 `xml:"title"`
 }
 
-// MyType11 ...
-type MyType11 struct {
-	Option1 *int      `xml:"option1"`
-	Option2 *string   `xml:"option2"`
-	Option3 *MyType10 `xml:"option3"`
+// Example0514MyType11 ...
+type Example0514MyType11 struct {
+	Option1 *int                 `xml:"option1"`
+	Option2 *string              `xml:"option2"`
+	Option3 *Example0514MyType10 `xml:"option3"`
 }
 
-// TopLevel ...
-type TopLevel struct {
-	CostAttr        *float64   `xml:"cost,attr"`
-	LastUpdatedAttr string     `xml:"LastUpdated,attr"`
-	Nested          *MyType7   `xml:"nested"`
-	MyType1         []string   `xml:"myType1"`
-	MyType2         []*MyType2 `xml:"myType2"`
-	*MyType6
+// Example0514TopLevel ...
+type Example0514TopLevel struct {
+	XMLName         xml.Name              `xml:"TopLevel"`
+	CostAttr        *float64              `xml:"cost,attr"`
+	LastUpdatedAttr string                `xml:"LastUpdated,attr"`
+	Nested          *Example0514MyType7   `xml:"nested"`
+	MyType1         []string              `xml:"myType1"`
+	MyType2         []*Example0514MyType2 `xml:"myType2"`
+	*Example0514MyType6
 }

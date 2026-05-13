@@ -13,7 +13,6 @@ import (
 	"go/format"
 	"os"
 	"reflect"
-	"sort"
 	"strings"
 )
 
@@ -24,12 +23,10 @@ type CodeGenerator struct {
 	File              string
 	Field             string
 	Package           string
-	RootImportPath    string
 	ImportTime        bool // For Go language
 	ImportEncodingXML bool // For Go language
 	TargetNamespace   string
 	LocalNameNSMap    map[string]string
-	GoImports         map[string]string
 	ProtoTree         []interface{}
 	StructAST         map[string]string
 	Hook              Hook
@@ -67,7 +64,6 @@ var goBuildinType = map[string]bool{
 func (gen *CodeGenerator) GenGo() error {
 	err := error(nil)
 	fieldNameCount = make(map[string]int)
-	gen.GoImports = make(map[string]string)
 	for _, ele := range gen.ProtoTree {
 		if ele == nil {
 			continue
@@ -95,20 +91,13 @@ func (gen *CodeGenerator) GenGo() error {
 		return err
 	}
 	defer f.Close()
+
 	var importLines []string
 	if gen.ImportTime {
 		importLines = append(importLines, "\t\"time\"")
 	}
 	if gen.ImportEncodingXML {
 		importLines = append(importLines, "\t\"encoding/xml\"")
-	}
-	importPaths := make([]string, 0, len(gen.GoImports))
-	for importPath := range gen.GoImports {
-		importPaths = append(importPaths, importPath)
-	}
-	sort.Strings(importPaths)
-	for _, importPath := range importPaths {
-		importLines = append(importLines, fmt.Sprintf("\t%s %q", gen.GoImports[importPath], importPath))
 	}
 	importPackage := ""
 	if len(importLines) > 0 {
@@ -157,36 +146,60 @@ func genGoTypeName(name string) string {
 	return fieldType
 }
 
+func (gen *CodeGenerator) goTypeNamespace(name string) string {
+	if prefix := getNSPrefix(name); prefix != "" {
+		if namespace := gen.LocalNameNSMap[prefix]; namespace != "" {
+			return namespace
+		}
+	}
+	return gen.TargetNamespace
+}
+
+func (gen *CodeGenerator) goTypeIdentifier(namespace, name string) string {
+	if _, ok := goBuildinType[name]; ok {
+		return name
+	}
+	fieldType := genGoTypeName(name)
+	if fieldType == "" {
+		return ""
+	}
+	if prefix := goNamespaceTypePrefix(namespace); prefix != "" {
+		return prefix + fieldType
+	}
+	return fieldType
+}
+
+func (gen *CodeGenerator) goDeclarationName(name string, unique bool) string {
+	fieldName := gen.goTypeIdentifier(gen.TargetNamespace, name)
+	if fieldName == "" {
+		fieldName = genGoTypeName(name)
+	}
+	if unique {
+		fieldNameCount[fieldName]++
+		if count := fieldNameCount[fieldName]; count != 1 {
+			fieldName = fmt.Sprintf("%s%d", fieldName, count)
+		}
+	}
+	return fieldName
+}
+
+func shouldAddGoXMLName(name string, anonymous bool) bool {
+	return anonymous || genGoTypeName(name) != name
+}
+
+func (gen *CodeGenerator) goReferenceType(name string) string {
+	return gen.goTypeIdentifier(gen.goTypeNamespace(name), name)
+}
+
 func (gen *CodeGenerator) goFieldType(name string) string {
 	if _, ok := goBuildinType[name]; ok {
 		return name
 	}
-	if prefix := getNSPrefix(name); prefix != "" {
-		namespace := gen.LocalNameNSMap[prefix]
-		if namespace != "" && namespace != gen.TargetNamespace {
-			alias := gen.goImportAlias(namespace)
-			fieldType := genGoTypeName(name)
-			if fieldType != "" {
-				return "*" + alias + "." + fieldType
-			}
-			return "interface{}"
-		}
-		name = trimNSPrefix(name)
-	}
-	fieldType := genGoTypeName(name)
+	fieldType := gen.goReferenceType(name)
 	if fieldType != "" {
 		return "*" + fieldType
 	}
 	return "interface{}"
-}
-
-func (gen *CodeGenerator) goImportAlias(namespace string) string {
-	if namespace == "" || namespace == gen.TargetNamespace {
-		return ""
-	}
-	alias := goNamespacePackageName(gen.RootImportPath, namespace)
-	gen.GoImports[goImportPathForNamespace(gen.RootImportPath, namespace)] = alias
-	return alias
 }
 
 // GoSimpleType generates code for simple type XML schema in Go language
@@ -200,7 +213,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 			}
 			content := fmt.Sprintf(" []%s\n", strings.TrimPrefix(fieldType, "*"))
 			gen.StructAST[v.Name] = content
-			fieldName := genGoFieldName(v.Name, true)
+			fieldName := gen.goDeclarationName(v.Name, true)
 
 			output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 			if gen.Hook != nil {
@@ -213,8 +226,8 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 	if v.Union && len(v.MemberTypes) > 0 {
 		if _, ok := gen.StructAST[v.Name]; !ok {
 			content := " struct {\n"
-			fieldName := genGoFieldName(v.Name, true)
-			if fieldName != v.Name {
+			fieldName := gen.goDeclarationName(v.Name, true)
+			if shouldAddGoXMLName(v.Name, v.Anonymous) {
 				gen.ImportEncodingXML = true
 				content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
 			}
@@ -241,7 +254,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := fmt.Sprintf(" %s\n", gen.goFieldType(getBasefromSimpleType(v.Base, gen.ProtoTree)))
 		gen.StructAST[v.Name] = content
-		fieldName := genGoFieldName(v.Name, true)
+		fieldName := gen.goDeclarationName(v.Name, true)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {
@@ -256,8 +269,8 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := " struct {\n"
-		fieldName := genGoFieldName(v.Name, true)
-		if fieldName != v.Name {
+		fieldName := gen.goDeclarationName(v.Name, true)
+		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
 		}
@@ -339,8 +352,8 @@ func isGoBuiltInType(typeName string) bool {
 func (gen *CodeGenerator) GoGroup(v *Group) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := " struct {\n"
-		fieldName := genGoFieldName(v.Name, true)
-		if fieldName != v.Name {
+		fieldName := gen.goDeclarationName(v.Name, true)
+		if shouldAddGoXMLName(v.Name, false) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
 		}
@@ -376,8 +389,8 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := " struct {\n"
-		fieldName := genGoFieldName(v.Name, true)
-		if fieldName != v.Name {
+		fieldName := gen.goDeclarationName(v.Name, true)
+		if shouldAddGoXMLName(v.Name, false) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
 		}
@@ -408,7 +421,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 		}
 		content := fmt.Sprintf("\t%s%s\n", plural, gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree)))
 		gen.StructAST[v.Name] = content
-		fieldName := genGoFieldName(v.Name, false)
+		fieldName := gen.goDeclarationName(v.Name, false)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {
@@ -427,7 +440,7 @@ func (gen *CodeGenerator) GoAttribute(v *Attribute) {
 		}
 		content := fmt.Sprintf("\t%s%s\n", plural, gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree)))
 		gen.StructAST[v.Name] = content
-		fieldName := genGoFieldName(v.Name, true)
+		fieldName := gen.goDeclarationName(v.Name, true)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {

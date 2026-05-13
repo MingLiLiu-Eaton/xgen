@@ -25,7 +25,7 @@ func TestGeneratedGo(t *testing.T) {
 	}{
 		{
 			xmlFileName:     "base64.xml",
-			receivingStruct: &schema.TopLevel{},
+			receivingStruct: &schema.Example0514TopLevel{},
 		},
 	}
 

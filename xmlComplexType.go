@@ -24,6 +24,7 @@ func (opt *Options) OnComplexType(ele xml.StartElement, protoTree []interface{})
 	if opt.ComplexType.Len() == 0 {
 		c := ComplexType{}
 		opt.CurrentEle = opt.InElement
+		inheritedName := false
 		for _, attr := range ele.Attr {
 			if attr.Name.Local == "name" {
 				c.Name = attr.Value
@@ -34,8 +35,10 @@ func (opt *Options) OnComplexType(ele xml.StartElement, protoTree []interface{})
 			c.Doc = e.Doc
 			if c.Name == "" {
 				c.Name = e.Name
+				inheritedName = true
 			}
 		}
+		c.Anonymous = inheritedName
 		opt.ComplexType.Push(&c)
 	}
 	return

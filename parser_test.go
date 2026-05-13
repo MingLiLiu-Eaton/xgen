@@ -278,8 +278,9 @@ func (h *ComprehensiveHook) OnGenerate(gen *CodeGenerator, protoName string, v i
 
 func (h *ComprehensiveHook) OnAddContent(gen *CodeGenerator, content *string) {
 	// Modify generated content to add a custom marker comment
-	if strings.Contains(*content, "type MyType2") {
-		*content = strings.Replace(*content, "type MyType2", "// HOOK_MODIFIED\ntype MyType2", 1)
+	typeName := gen.goTypeIdentifier(gen.TargetNamespace, "myType2")
+	if strings.Contains(*content, "type "+typeName) {
+		*content = strings.Replace(*content, "type "+typeName, "// HOOK_MODIFIED\ntype "+typeName, 1)
 		h.ModifiedContent = true
 	}
 }
@@ -331,6 +332,7 @@ func TestHookSkipAndModify(t *testing.T) {
 	require.NoError(t, err)
 
 	generatedCode := string(content)
+	basePrefix := goNamespaceTypePrefix("http://example.org/")
 
 	// Verify hook comment was added
 	if hook.ModifiedContent {
@@ -338,14 +340,14 @@ func TestHookSkipAndModify(t *testing.T) {
 	}
 
 	// Verify skipped type was not generated
-	// MyType1 should not have its own type declaration (it's used as a field type but shouldn't have "type MyType1 ")
-	assert.NotContains(t, generatedCode, "type MyType1 ", "Skipped type should not have its own type declaration")
+	// MyType1 should not have its own type declaration (it's used as a field type but shouldn't have "type <Prefix>MyType1 ")
+	assert.NotContains(t, generatedCode, "type "+basePrefix+"MyType1 ", "Skipped type should not have its own type declaration")
 
 	// Verify it's still referenced in TopLevel (the field name, not the type declaration)
 	assert.Contains(t, generatedCode, "MyType1         []string", "Field referencing the type should still exist")
 
 	// Verify other types were still generated
-	assert.Contains(t, generatedCode, "type MyType2", "Non-skipped types should be generated")
+	assert.Contains(t, generatedCode, "type "+basePrefix+"MyType2", "Non-skipped types should be generated")
 }
 
 // ErrorTestHook tests error propagation from hooks
@@ -740,7 +742,7 @@ func TestOnAddContentHookIsNil(t *testing.T) {
 	}
 }
 
-func TestParseGoSeparatesImportedNamespaces(t *testing.T) {
+func TestParseGoPrefixesNamespacesInSinglePackage(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-namespace-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
@@ -811,24 +813,28 @@ func TestParseGoSeparatesImportedNamespaces(t *testing.T) {
 	})
 	require.NoError(t, parser.Parse())
 
-	alphaPkg := goNamespacePackageName("schema", "http://example.com/alpha")
-	betaPkg := goNamespacePackageName("schema", "http://example.com/beta")
+	alphaPrefix := goNamespaceTypePrefix("http://example.com/alpha")
+	betaPrefix := goNamespaceTypePrefix("http://example.com/beta")
+	rootPrefix := goNamespaceTypePrefix("http://example.com/root")
 
 	rootGenerated, err := os.ReadFile(filepath.Join(outputDir, "root.xsd.go"))
 	require.NoError(t, err)
 	rootCode := string(rootGenerated)
-	assert.Contains(t, rootCode, fmt.Sprintf("%s %q", alphaPkg, goImportPathForNamespace("schema", "http://example.com/alpha")))
-	assert.Contains(t, rootCode, fmt.Sprintf("%s %q", betaPkg, goImportPathForNamespace("schema", "http://example.com/beta")))
-	assert.Contains(t, rootCode, fmt.Sprintf("*%s.SharedType", alphaPkg))
-	assert.Contains(t, rootCode, fmt.Sprintf("*%s.SharedType", betaPkg))
+	assert.NotContains(t, rootCode, "schema/")
+	assert.Contains(t, rootCode, "package schema")
+	assert.Contains(t, rootCode, fmt.Sprintf("type %sEnvelope struct", rootPrefix))
+	assert.Contains(t, rootCode, fmt.Sprintf("*%sSharedType", alphaPrefix))
+	assert.Contains(t, rootCode, fmt.Sprintf("*%sSharedType", betaPrefix))
 
-	alphaGenerated, err := os.ReadFile(filepath.Join(outputDir, alphaPkg, "alpha.xsd.go"))
+	alphaGenerated, err := os.ReadFile(filepath.Join(outputDir, "alpha.xsd.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(alphaGenerated), "package "+alphaPkg)
+	assert.Contains(t, string(alphaGenerated), "package schema")
+	assert.Contains(t, string(alphaGenerated), fmt.Sprintf("type %sSharedType struct", alphaPrefix))
 
-	betaGenerated, err := os.ReadFile(filepath.Join(outputDir, betaPkg, "beta.xsd.go"))
+	betaGenerated, err := os.ReadFile(filepath.Join(outputDir, "beta.xsd.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(betaGenerated), "package "+betaPkg)
+	assert.Contains(t, string(betaGenerated), "package schema")
+	assert.Contains(t, string(betaGenerated), fmt.Sprintf("type %sSharedType struct", betaPrefix))
 
 	goMod := "module schema\n\ngo 1.22\n"
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))

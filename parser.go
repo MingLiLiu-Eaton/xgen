@@ -172,14 +172,8 @@ func (opt *Options) Parse() (err error) {
 		opt.ParseFileMap[opt.FilePath] = opt.ProtoTree
 		path := filepath.Join(opt.OutputDir, strings.TrimPrefix(opt.FilePath, opt.InputDir))
 		packageName := opt.Package
-		rootImportPath := ""
 		if opt.Lang == "Go" {
-			rootImportPath = goImportBasePath(opt.Package)
 			packageName = goPackageName(opt.Package)
-			if opt.Dependency && opt.TargetNamespace != "" {
-				path = filepath.Join(opt.OutputDir, goNamespacePackageName(opt.Package, opt.TargetNamespace), generatedGoFilename(opt.FilePath, opt.InputDir))
-				packageName = goNamespacePackageName(opt.Package, opt.TargetNamespace)
-			}
 		}
 		if err := PrepareOutputDir(filepath.Dir(path)); err != nil {
 			fmt.Println(err)
@@ -188,7 +182,6 @@ func (opt *Options) Parse() (err error) {
 		generator := &CodeGenerator{
 			Lang:            opt.Lang,
 			Package:         packageName,
-			RootImportPath:  rootImportPath,
 			TargetNamespace: opt.TargetNamespace,
 			LocalNameNSMap:  cloneStringMap(opt.LocalNameNSMap),
 			File:            path,
