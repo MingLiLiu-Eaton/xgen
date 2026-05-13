@@ -1,0 +1,21 @@
+<schema xmlns="http://www.w3.org/2001/XMLSchema" xmlns:member="http://example.org/member-validation" targetNamespace="http://example.org/member-validation">
+  <simpleType name="color">
+    <restriction base="string">
+      <enumeration value="red"/>
+      <enumeration value="green"/>
+    </restriction>
+  </simpleType>
+
+  <simpleType name="unionValue">
+    <union memberTypes="boolean member:color"/>
+  </simpleType>
+
+  <element name="ValidationTop">
+    <complexType>
+      <sequence>
+        <element name="value" type="member:unionValue"/>
+      </sequence>
+      <attribute name="attr" type="member:unionValue" use="required"/>
+    </complexType>
+  </element>
+</schema>

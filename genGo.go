@@ -515,6 +515,43 @@ func (v *%s) UnmarshalText(text []byte) error {
 `, validatorName, strings.Join(caseValues, ", "), errorFormat, typeName, validatorName, textExpr, typeName, textExpr, validatorName, typeName, validatorName, unmarshalAssignment)
 }
 
+func findSimpleTypeInTree(name string, protoTree []interface{}) *SimpleType {
+	localName := trimNSPrefix(name)
+	for _, ele := range protoTree {
+		if v, ok := ele.(*SimpleType); ok && v.Name == localName {
+			return v
+		}
+	}
+	return nil
+}
+
+func (gen *CodeGenerator) goFindSimpleType(name string) *SimpleType {
+	if simpleType := findSimpleTypeInTree(name, gen.ProtoTree); simpleType != nil {
+		return simpleType
+	}
+	for _, tree := range gen.ParseFileMap {
+		if simpleType := findSimpleTypeInTree(name, tree); simpleType != nil {
+			return simpleType
+		}
+	}
+	return nil
+}
+
+func (gen *CodeGenerator) goSimpleTypeHasValidation(simpleType *SimpleType) bool {
+	if simpleType == nil {
+		return false
+	}
+	if simpleType.Union && len(simpleType.MemberTypes) > 0 {
+		return true
+	}
+	baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
+	return len(simpleType.Restriction.Enum) > 0 && goSupportsSimpleTypeValidation(baseType)
+}
+
+func (gen *CodeGenerator) goSimpleTypeValidatorName(name string) string {
+	return "validate" + gen.goTypeIdentifier(gen.TargetNamespace, name)
+}
+
 func goSupportsUnionValidation(memberType string) bool {
 	switch memberType {
 	case "string", "bool", "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
@@ -538,6 +575,10 @@ func (gen *CodeGenerator) goUnionValidationMethods(typeName string, memberTypes 
 			memberType = getBasefromSimpleType(memberName, gen.ProtoTree)
 		}
 		memberNames = append(memberNames, memberName)
+		if memberSimpleType := gen.goFindSimpleType(memberName); gen.goSimpleTypeHasValidation(memberSimpleType) {
+			validationChecks = append(validationChecks, fmt.Sprintf("\tif err := %s(value); err == nil {\n\t\treturn nil\n\t}", gen.goSimpleTypeValidatorName(memberSimpleType.Name)))
+			continue
+		}
 		if !goSupportsUnionValidation(memberType) {
 			continue
 		}

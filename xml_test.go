@@ -32,6 +32,10 @@ func TestGeneratedGo(t *testing.T) {
 			xmlFileName:     "union.xml",
 			receivingStruct: &schema.HereUnionTop{},
 		},
+		{
+			xmlFileName:     "union-member-validation.xml",
+			receivingStruct: &schema.MemberValidationTop{},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -104,6 +108,29 @@ func TestGeneratedGoRejectsInvalidUnionDuringMarshal(t *testing.T) {
 	assert.Contains(t, err.Error(), "HereUnionValue")
 }
 
+func TestGeneratedGoRejectsInvalidUnionMemberValidationDuringUnmarshal(t *testing.T) {
+	input := []byte(`<ValidationTop attr="blue">
+    <value>true</value>
+</ValidationTop>`)
+	var actual schema.MemberValidationTop
+	err := xml.Unmarshal(input, &actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MemberUnionValue")
+}
+
+func TestGeneratedGoRejectsInvalidUnionMemberValidationDuringMarshal(t *testing.T) {
+	attr := schema.MemberUnionValue("blue")
+	value := schema.MemberUnionValue("green")
+	actual := &schema.MemberValidationTop{
+		XMLName:  xml.Name{Local: "ValidationTop"},
+		AttrAttr: &attr,
+		Value:    &value,
+	}
+	_, err := xml.Marshal(actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MemberUnionValue")
+}
+
 func TestGenGoAddsValidationForRestrictedSimpleType(t *testing.T) {
 	tempDir := t.TempDir()
 	gen := &CodeGenerator{
@@ -174,6 +201,43 @@ func TestGenGoAddsTextMarshalingForUnionSimpleType(t *testing.T) {
 	assert.Contains(t, source, "func (v *"+typeName+") UnmarshalText(text []byte) error")
 }
 
+func TestGenGoUnionReusesNamedMemberValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "union-member"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name: "color",
+				Base: "string",
+				Restriction: Restriction{
+					Enum: []string{"red", "green"},
+				},
+			},
+			&SimpleType{
+				Name:        "unionValue",
+				Union:       true,
+				MemberTypes: map[string]string{"boolean": "bool", "color": "string"},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "union-member.go"))
+	require.NoError(t, err)
+
+	source := string(output)
+	assert.Contains(t, source, "if err := validateHereColor(value); err == nil {")
+}
+
 func TestParseGoUnionFixture(t *testing.T) {
 	tempDir := t.TempDir()
 	inputDir := "testdata"
@@ -195,6 +259,32 @@ func TestParseGoUnionFixture(t *testing.T) {
 	require.NoError(t, err)
 
 	expectedGenerated, err := ioutil.ReadFile(filepath.Join("test", "go", "union.xsd.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expectedGenerated), string(actualGenerated))
+}
+
+func TestParseGoUnionMemberValidationFixture(t *testing.T) {
+	tempDir := t.TempDir()
+	inputDir := "testdata"
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "union-member-validation.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           tempDir,
+		Lang:                "Go",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+	})
+	require.NoError(t, parser.Parse())
+
+	actualGenerated, err := ioutil.ReadFile(filepath.Join(tempDir, "union-member-validation.xsd.go"))
+	require.NoError(t, err)
+
+	expectedGenerated, err := ioutil.ReadFile(filepath.Join("test", "go", "union-member-validation.xsd.go"))
 	require.NoError(t, err)
 
 	assert.Equal(t, string(expectedGenerated), string(actualGenerated))
