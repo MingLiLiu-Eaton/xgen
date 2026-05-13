@@ -15,11 +15,5 @@ import "encoding/xml"
 // the maximum number of decimal places allowed. Must be equal to or greater
 // than zero.
 func (opt *Options) EndFractionDigits(ele xml.EndElement, protoTree []interface{}) (err error) {
-	if opt.SimpleType.Len() > 0 && opt.Element.Len() > 0 {
-		if opt.Element.Peek().(*Element).Type, err = opt.GetValueType(opt.SimpleType.Pop().(*SimpleType).Base, opt.ProtoTree); err != nil {
-			return
-		}
-		opt.CurrentEle = ""
-	}
-	return
+	return opt.finalizeInlineSimpleTypeTarget()
 }

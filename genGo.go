@@ -23,6 +23,7 @@ type CodeGenerator struct {
 	File              string
 	Field             string
 	Package           string
+	ImportFmt         bool // For Go language
 	ImportTime        bool // For Go language
 	ImportEncodingXML bool // For Go language
 	TargetNamespace   string
@@ -96,6 +97,9 @@ func (gen *CodeGenerator) GenGo() error {
 	defer f.Close()
 
 	var importLines []string
+	if gen.ImportFmt {
+		importLines = append(importLines, "\t\"fmt\"")
+	}
 	if gen.ImportTime {
 		importLines = append(importLines, "\t\"time\"")
 	}
@@ -352,7 +356,8 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 		return
 	}
 	if _, ok := gen.StructAST[v.Name]; !ok {
-		content := fmt.Sprintf(" %s\n", gen.goFieldType(getBasefromSimpleType(v.Base, gen.ProtoTree)))
+		baseType := getBasefromSimpleType(v.Base, gen.ProtoTree)
+		content := fmt.Sprintf(" %s\n", gen.goFieldType(baseType))
 		gen.StructAST[v.Name] = content
 		fieldName := gen.goDeclarationName(v.Name, true)
 
@@ -361,6 +366,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goSimpleTypeValidationMethods(fieldName, baseType, v.Restriction)
 	}
 }
 
@@ -384,6 +390,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 
 		for _, attribute := range v.Attributes {
 			fieldType := gen.goFieldType(getBasefromSimpleType(attribute.Type, gen.ProtoTree))
+			if helperName := gen.goEnsureInlineSimpleType(fieldName, genGoFieldName(attribute.Name, false)+"Attr", attribute.InlineSimpleType); helperName != "" {
+				fieldType = gen.goFieldType(helperName)
+			}
 			var optional string
 			if attribute.Optional {
 				if !strings.HasPrefix(fieldType, `*`) {
@@ -407,6 +416,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 
 		for _, element := range v.Elements {
 			fieldType := gen.goFieldType(getBasefromSimpleType(element.Type, gen.ProtoTree))
+			if helperName := gen.goEnsureInlineSimpleType(fieldName, genGoFieldName(element.Name, false), element.InlineSimpleType); helperName != "" {
+				fieldType = gen.goFieldType(helperName)
+			}
 
 			if element.Plural {
 				fieldType = "[]" + fieldType
@@ -446,6 +458,89 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 func isGoBuiltInType(typeName string) bool {
 	_, builtIn := goBuildinType[typeName]
 	return builtIn
+}
+
+func goSupportsSimpleTypeValidation(baseType string) bool {
+	switch baseType {
+	case "string", "bool", "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return true
+	default:
+		return false
+	}
+}
+
+func goSimpleTypeTextExpr(baseType, valueExpr string) string {
+	if baseType == "string" {
+		return fmt.Sprintf("string(%s)", valueExpr)
+	}
+	return fmt.Sprintf("fmt.Sprint(%s(%s))", baseType, valueExpr)
+}
+
+func (gen *CodeGenerator) goSimpleTypeValidationMethods(typeName, baseType string, restriction Restriction) string {
+	if len(restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
+		return ""
+	}
+	gen.ImportFmt = true
+	validatorName := "validate" + typeName
+	caseValues := make([]string, 0, len(restriction.Enum))
+	for _, enum := range restriction.Enum {
+		caseValues = append(caseValues, fmt.Sprintf("%q", enum))
+	}
+	errorFormat := fmt.Sprintf("%s must be one of [%s], got %%q", typeName, strings.Join(restriction.Enum, ", "))
+	textExpr := goSimpleTypeTextExpr(baseType, "v")
+	unmarshalAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)
+	if baseType != "string" {
+		unmarshalAssignment = fmt.Sprintf("\tvar parsed %s\n\tif _, err := fmt.Sscan(value, &parsed); err != nil {\n\t\treturn err\n\t}\n\t*v = %s(parsed)\n", baseType, typeName)
+	}
+	return fmt.Sprintf(`
+func %s(value string) error {
+	switch value {
+	case %s:
+		return nil
+	default:
+		return fmt.Errorf(%q, value)
+	}
+}
+
+func (v %s) Validate() error {
+	return %s(%s)
+}
+
+func (v %s) MarshalText() ([]byte, error) {
+	value := %s
+	if err := %s(value); err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (v *%s) UnmarshalText(text []byte) error {
+	value := string(text)
+	if err := %s(value); err != nil {
+		return err
+	}
+%s	return nil
+}
+`, validatorName, strings.Join(caseValues, ", "), errorFormat, typeName, validatorName, textExpr, typeName, textExpr, validatorName, typeName, validatorName, unmarshalAssignment)
+}
+
+func (gen *CodeGenerator) goEnsureInlineSimpleType(ownerTypeName, fieldName string, simpleType *SimpleType) string {
+	if simpleType == nil {
+		return ""
+	}
+	baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
+	if len(simpleType.Restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
+		return ""
+	}
+	helperName := ownerTypeName + fieldName
+	if _, ok := gen.StructAST[helperName]; ok {
+		return helperName
+	}
+	inlineType := *simpleType
+	inlineType.Name = helperName
+	inlineType.Anonymous = false
+	gen.GoSimpleType(&inlineType)
+	return helperName
 }
 
 // GoGroup generates code for group XML schema in Go language syntax.
@@ -515,13 +610,17 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 // GoElement generates code for element XML schema in Go language syntax.
 func (gen *CodeGenerator) GoElement(v *Element) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
+		fieldName := gen.goElementDeclarationName(v.Name)
+		fieldType := gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree))
+		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
+			fieldType = gen.goFieldType(helperName)
+		}
 		var plural string
 		if v.Plural {
 			plural = "[]"
 		}
-		content := fmt.Sprintf("\t%s%s\n", plural, gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree)))
+		content := fmt.Sprintf("\t%s%s\n", plural, fieldType)
 		gen.StructAST[v.Name] = content
-		fieldName := gen.goElementDeclarationName(v.Name)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {
@@ -534,13 +633,17 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 // GoAttribute generates code for attribute XML schema in Go language syntax.
 func (gen *CodeGenerator) GoAttribute(v *Attribute) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
+		fieldName := gen.goDeclarationName(v.Name, true)
+		fieldType := gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree))
+		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
+			fieldType = gen.goFieldType(helperName)
+		}
 		var plural string
 		if v.Plural {
 			plural = "[]"
 		}
-		content := fmt.Sprintf("\t%s%s\n", plural, gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree)))
+		content := fmt.Sprintf("\t%s%s\n", plural, fieldType)
 		gen.StructAST[v.Name] = content
-		fieldName := gen.goDeclarationName(v.Name, true)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {

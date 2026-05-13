@@ -14,11 +14,5 @@ import "encoding/xml"
 // WhiteSpace specifies how white space (line feeds, tabs, spaces, and
 // carriage returns) is handled.
 func (opt *Options) EndWhiteSpace(ele xml.EndElement, protoTree []interface{}) (err error) {
-	if opt.SimpleType.Len() > 0 && opt.Element.Len() > 0 {
-		if opt.Element.Peek().(*Element).Type, err = opt.GetValueType(opt.SimpleType.Pop().(*SimpleType).Base, opt.ProtoTree); err != nil {
-			return
-		}
-		opt.CurrentEle = ""
-	}
-	return
+	return opt.finalizeInlineSimpleTypeTarget()
 }

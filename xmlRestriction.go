@@ -22,16 +22,11 @@ func (opt *Options) OnRestriction(ele xml.StartElement, protoTree []interface{})
 				return
 			}
 			if opt.SimpleType.Peek() != nil {
-				if opt.Element.Len() > 0 {
-					opt.Element.Peek().(*Element).Type, err = opt.GetValueType(valueType, protoTree)
-					return
-				}
-
 				opt.SimpleType.Peek().(*SimpleType).Base, err = opt.GetValueType(valueType, protoTree)
 				if err != nil {
 					return
 				}
-				if opt.SimpleType.Peek().(*SimpleType).Name == "" {
+				if opt.SimpleType.Peek().(*SimpleType).Name == "" && opt.Attribute.Len() == 0 && opt.Element.Len() == 0 {
 					opt.SimpleType.Peek().(*SimpleType).Name = attr.Value
 				}
 			}
@@ -42,17 +37,8 @@ func (opt *Options) OnRestriction(ele xml.StartElement, protoTree []interface{})
 
 // EndRestriction handles parsing event on the restriction end elements.
 func (opt *Options) EndRestriction(ele xml.EndElement, protoTree []interface{}) (err error) {
-	if opt.Attribute.Len() > 0 && opt.SimpleType.Peek() != nil {
-		opt.Attribute.Peek().(*Attribute).Type, err = opt.GetValueType(opt.SimpleType.Pop().(*SimpleType).Base, opt.ProtoTree)
-		if err != nil {
-			return
-		}
-		opt.CurrentEle = ""
-	}
-	if !opt.Element.Empty() {
-		if !opt.ComplexType.Empty() && len(opt.ComplexType.Peek().(*ComplexType).Elements) > 0 {
-			opt.ComplexType.Peek().(*ComplexType).Elements[len(opt.ComplexType.Peek().(*ComplexType).Elements)-1] = *opt.Element.Peek().(*Element)
-		}
+	if err = opt.finalizeInlineSimpleTypeTarget(); err != nil {
+		return
 	}
 	return
 }

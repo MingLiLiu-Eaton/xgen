@@ -52,6 +52,66 @@ func TestGeneratedGo(t *testing.T) {
 	}
 }
 
+func TestGeneratedGoRejectsInvalidInlineEnumDuringUnmarshal(t *testing.T) {
+	input := []byte(`<TopLevel cost="1.25" LastUpdated="2021-09-14T12:04:09.69" code="not found" identifier="10">
+    <nested origin="internet">Destination-Host</nested>
+</TopLevel>`)
+	var actual schema.HereTopLevel
+	err := xml.Unmarshal(input, &actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HereMyType6CodeAttr")
+}
+
+func TestGeneratedGoRejectsInvalidInlineEnumDuringMarshal(t *testing.T) {
+	code := schema.HereMyType6CodeAttr("not found")
+	value := &schema.HereTopLevel{
+		XMLName:         xml.Name{Local: "TopLevel"},
+		LastUpdatedAttr: "2021-09-14T12:04:09.69",
+		HereMyType6: &schema.HereMyType6{
+			CodeAttr: &code,
+		},
+	}
+	_, err := xml.Marshal(value)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HereMyType6CodeAttr")
+}
+
+func TestGenGoAddsValidationForRestrictedSimpleType(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "enum"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name: "status",
+				Base: "string",
+				Restriction: Restriction{
+					Enum: []string{"open", "closed"},
+				},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "enum.go"))
+	require.NoError(t, err)
+
+	typeName := gen.goTypeIdentifier(gen.TargetNamespace, "status")
+	source := string(output)
+	assert.Contains(t, source, "type "+typeName+" string")
+	assert.Contains(t, source, "func (v "+typeName+") Validate() error")
+	assert.Contains(t, source, "func (v "+typeName+") MarshalText() ([]byte, error)")
+	assert.Contains(t, source, "func (v *"+typeName+") UnmarshalText(text []byte) error")
+}
+
 func TestToTitle(t *testing.T) {
 	test := func(expected, actual string) {
 		assert.Equal(t, expected, ToTitle(actual))

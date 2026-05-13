@@ -14,11 +14,5 @@ import "encoding/xml"
 // MinInclusive specifies the lower bounds for numeric values (the value must
 // be greater than or equal to this value).
 func (opt *Options) EndMinInclusive(ele xml.EndElement, protoTree []interface{}) (err error) {
-	if opt.SimpleType.Len() > 0 && opt.Element.Len() > 0 {
-		if opt.Element.Peek().(*Element).Type, err = opt.GetValueType(opt.SimpleType.Pop().(*SimpleType).Base, opt.ProtoTree); err != nil {
-			return
-		}
-		opt.CurrentEle = ""
-	}
-	return
+	return opt.finalizeInlineSimpleTypeTarget()
 }

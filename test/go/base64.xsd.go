@@ -4,6 +4,7 @@ package schema
 
 import (
 	"encoding/xml"
+	"fmt"
 )
 
 // HereMyType1 ...
@@ -32,10 +33,43 @@ type HereMyType4 struct {
 // HereMyType5 ...
 type HereMyType5 string
 
+// HereMyType6CodeAttr ...
+type HereMyType6CodeAttr string
+
+func validateHereMyType6CodeAttr(value string) error {
+	switch value {
+	case "value1", "value2":
+		return nil
+	default:
+		return fmt.Errorf("HereMyType6CodeAttr must be one of [value1, value2], got %q", value)
+	}
+}
+
+func (v HereMyType6CodeAttr) Validate() error {
+	return validateHereMyType6CodeAttr(string(v))
+}
+
+func (v HereMyType6CodeAttr) MarshalText() ([]byte, error) {
+	value := string(v)
+	if err := validateHereMyType6CodeAttr(value); err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (v *HereMyType6CodeAttr) UnmarshalText(text []byte) error {
+	value := string(text)
+	if err := validateHereMyType6CodeAttr(value); err != nil {
+		return err
+	}
+	*v = HereMyType6CodeAttr(value)
+	return nil
+}
+
 // HereMyType6 ...
 type HereMyType6 struct {
-	CodeAttr       *string `xml:"code,attr"`
-	IdentifierAttr *int    `xml:"identifier,attr"`
+	CodeAttr       *HereMyType6CodeAttr `xml:"code,attr,omitempty"`
+	IdentifierAttr *int                 `xml:"identifier,attr"`
 }
 
 // HereMyType7 ...
