@@ -32,6 +32,7 @@ type Options struct {
 	Package             string
 	TargetNamespace     string
 	NamespacePrefixMap  map[string]string
+	ReferencedElements  map[string]bool
 	IncludeMap          map[string]bool
 	LocalNameNSMap      map[string]string
 	NSSchemaLocationMap map[string]string
@@ -70,6 +71,19 @@ func (opt *Options) Parse() (err error) {
 	opt.FileDir = filepath.Dir(opt.FilePath)
 	if opt.NamespacePrefixMap == nil {
 		opt.NamespacePrefixMap = make(map[string]string)
+	}
+	if opt.ReferencedElements == nil {
+		opt.ReferencedElements = make(map[string]bool)
+	}
+	if len(opt.ReferencedElements) == 0 && opt.InputDir != "" {
+		var refs map[string]bool
+		refs, err = collectQualifiedElementRefs(opt.InputDir)
+		if err != nil {
+			return
+		}
+		for name := range refs {
+			opt.ReferencedElements[name] = true
+		}
 	}
 	var fi os.FileInfo
 	fi, err = os.Stat(opt.FilePath)
@@ -188,6 +202,7 @@ func (opt *Options) Parse() (err error) {
 			Package:         packageName,
 			TargetNamespace: opt.TargetNamespace,
 			NamespacePrefix: cloneStringMap(opt.NamespacePrefixMap),
+			ReferencedNames: cloneBoolMap(opt.ReferencedElements),
 			LocalNameNSMap:  cloneStringMap(opt.LocalNameNSMap),
 			File:            path,
 			ParseFileMap:    opt.ParseFileMap,
@@ -276,6 +291,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 				IncludeMap:          cloneBoolMap(opt.IncludeMap),
 				LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
 				NamespacePrefixMap:  opt.NamespacePrefixMap,
+				ReferencedElements:  opt.ReferencedElements,
 				NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 				ParseFileList:       opt.ParseFileList,
 				ParseFileMap:        opt.ParseFileMap,
@@ -309,6 +325,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 			IncludeMap:          cloneBoolMap(opt.IncludeMap),
 			LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
 			NamespacePrefixMap:  opt.NamespacePrefixMap,
+			ReferencedElements:  opt.ReferencedElements,
 			NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 			ParseFileList:       opt.ParseFileList,
 			ParseFileMap:        opt.ParseFileMap,
@@ -336,6 +353,7 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		IncludeMap:          cloneBoolMap(opt.IncludeMap),
 		LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
 		NamespacePrefixMap:  opt.NamespacePrefixMap,
+		ReferencedElements:  opt.ReferencedElements,
 		NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 		ParseFileList:       opt.ParseFileList,
 		ParseFileMap:        opt.ParseFileMap,

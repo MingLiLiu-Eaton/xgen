@@ -19,6 +19,9 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 	for _, attr := range ele.Attr {
 		if attr.Name.Local == "ref" {
 			e.Name = attr.Value
+			if getNSPrefix(attr.Value) != "" {
+				opt.ReferencedElements[attr.Value] = true
+			}
 			e.Type, err = opt.GetValueType(attr.Value, protoTree)
 			if err != nil {
 				return

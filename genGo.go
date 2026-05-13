@@ -27,6 +27,7 @@ type CodeGenerator struct {
 	ImportEncodingXML bool // For Go language
 	TargetNamespace   string
 	NamespacePrefix   map[string]string
+	ReferencedNames   map[string]bool
 	LocalNameNSMap    map[string]string
 	ParseFileMap      map[string][]interface{}
 	ProtoTree         []interface{}
@@ -245,6 +246,9 @@ func (gen *CodeGenerator) goXMLName(name string, anonymous bool) string {
 		return name
 	}
 	qualifiedName := fmt.Sprintf("%s:%s", prefix, name)
+	if gen.ReferencedNames[qualifiedName] {
+		return qualifiedName
+	}
 	if gen.hasQualifiedElementReference(qualifiedName) {
 		return qualifiedName
 	}
