@@ -193,6 +193,45 @@ func (gen *CodeGenerator) goDeclarationName(name string, unique bool) string {
 	return fieldName
 }
 
+func (gen *CodeGenerator) goElementDeclarationName(name string) string {
+	fieldName := gen.goTypeIdentifier(gen.TargetNamespace, name)
+	if fieldName == "" {
+		fieldName = genGoTypeName(name)
+	}
+	if gen.hasLocalNamedTypeConflict(fieldName, name) {
+		fieldName += "Element"
+	}
+	fieldNameCount[fieldName]++
+	if count := fieldNameCount[fieldName]; count != 1 {
+		fieldName = fmt.Sprintf("%s%d", fieldName, count)
+	}
+	return fieldName
+}
+
+func (gen *CodeGenerator) hasLocalNamedTypeConflict(goName, originalName string) bool {
+	for _, ele := range gen.ProtoTree {
+		switch v := ele.(type) {
+		case *SimpleType:
+			if v.Name != originalName && gen.goTypeIdentifier(gen.TargetNamespace, v.Name) == goName {
+				return true
+			}
+		case *ComplexType:
+			if v.Name != originalName && gen.goTypeIdentifier(gen.TargetNamespace, v.Name) == goName {
+				return true
+			}
+		case *Group:
+			if v.Name != originalName && gen.goTypeIdentifier(gen.TargetNamespace, v.Name) == goName {
+				return true
+			}
+		case *AttributeGroup:
+			if v.Name != originalName && gen.goTypeIdentifier(gen.TargetNamespace, v.Name) == goName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func shouldAddGoXMLName(name string, anonymous bool) bool {
 	return anonymous || strings.IndexFunc(name, splitter) >= 0
 }
@@ -478,7 +517,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 		}
 		content := fmt.Sprintf("\t%s%s\n", plural, gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree)))
 		gen.StructAST[v.Name] = content
-		fieldName := gen.goDeclarationName(v.Name, false)
+		fieldName := gen.goElementDeclarationName(v.Name)
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
 		if gen.Hook != nil {

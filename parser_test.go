@@ -926,3 +926,50 @@ func TestQNameMarshalUnmarshal(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoAddsElementSuffixOnReadableNameCollision(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-collision-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:element name="optType" type="xs:string"/>
+	<xs:complexType name="EiOptType">
+		<xs:sequence>
+			<xs:element name="value" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "collision.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "collision.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "collision.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type EiOptTypeElement string")
+	assert.Contains(t, code, "type EiOptType struct")
+}
