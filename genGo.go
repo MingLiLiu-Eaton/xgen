@@ -245,22 +245,56 @@ func shouldAddGoXMLName(name string, anonymous bool) bool {
 	return anonymous || strings.IndexFunc(name, splitter) >= 0
 }
 
-func (gen *CodeGenerator) goXMLName(name string, anonymous bool) string {
-	if !anonymous {
-		return name
+func (gen *CodeGenerator) goXMLName(v *ComplexType) string {
+	if !v.Anonymous {
+		return v.Name
 	}
 	prefix := normalizeNamespacePrefixCandidate(gen.NamespacePrefix[gen.TargetNamespace])
 	if prefix == "" {
-		return name
+		return v.Name
 	}
-	qualifiedName := fmt.Sprintf("%s:%s", prefix, name)
+	qualifiedName := fmt.Sprintf("%s:%s", prefix, v.Name)
 	if gen.ReferencedNames[qualifiedName] {
 		return qualifiedName
 	}
 	if gen.hasQualifiedElementReference(qualifiedName) {
 		return qualifiedName
 	}
-	return name
+	if complexTypeUsesQualifiedElementPrefix(v, prefix) {
+		return qualifiedName
+	}
+	return v.Name
+}
+
+func complexTypeUsesQualifiedElementPrefix(v *ComplexType, prefix string) bool {
+	for _, element := range v.Elements {
+		if getNSPrefix(element.Name) == prefix {
+			return true
+		}
+	}
+	for _, group := range v.Groups {
+		if groupUsesQualifiedElementPrefix(group, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupUsesQualifiedElementPrefix(group Group, prefix string) bool {
+	if getNSPrefix(group.Ref) == prefix {
+		return true
+	}
+	for _, element := range group.Elements {
+		if getNSPrefix(element.Name) == prefix {
+			return true
+		}
+	}
+	for _, nested := range group.Groups {
+		if groupUsesQualifiedElementPrefix(nested, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (gen *CodeGenerator) hasQualifiedElementReference(name string) bool {
@@ -369,7 +403,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		fieldName := gen.goDeclarationName(v.Name, true)
 		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
-			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Anonymous))
+			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v))
 		}
 		for _, attrGroup := range v.AttributeGroup {
 			fieldType := getBasefromSimpleType(attrGroup.Ref, gen.ProtoTree)

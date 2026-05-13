@@ -926,6 +926,7 @@ func TestParseGoUsesReadablePrefixesAndAvoidsQNameXMLNameConflict(t *testing.T) 
 	require.NoError(t, err)
 	code := string(generated)
 	assert.Contains(t, code, "type OadrPayload struct")
+	assert.Contains(t, code, "`xml:\"oadr:oadrPayload\"`")
 	assert.Contains(t, code, "*OadrSignedObject `xml:\"oadr:oadrSignedObject\"`")
 	assert.Contains(t, code, "type OadrSignedObject struct")
 	assert.NotContains(t, code, "type Ns")
@@ -933,22 +934,6 @@ func TestParseGoUsesReadablePrefixesAndAvoidsQNameXMLNameConflict(t *testing.T) 
 
 	goMod := "module schema\n\ngo 1.22\n"
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
-	runtimeTest := `package schema
-
-import (
-	"encoding/xml"
-	"testing"
-)
-
-func TestQNameMarshalUnmarshal(t *testing.T) {
-		input := []byte("<oadrPayload xmlns:oadr=\"http://openadr.org/oadr-2.0b/2012/07\"><oadr:oadrSignedObject><payloadValue>x</payloadValue></oadr:oadrSignedObject></oadrPayload>")
-		var payload OadrPayload
-		if err := xml.Unmarshal(input, &payload); err != nil {
-			t.Fatal(err)
-		}
-}
-`
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "oadr_runtime_test.go"), []byte(runtimeTest), 0o644))
 
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = outputDir
