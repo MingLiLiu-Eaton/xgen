@@ -14,5 +14,11 @@ import "encoding/xml"
 // root element of every XML Schema.
 func (opt *Options) OnSchema(ele xml.StartElement, protoTree []interface{}) (err error) {
 	opt.prepareLocalNameNSMap(ele)
+	for _, attr := range ele.Attr {
+		if attr.Name.Local == "targetNamespace" {
+			opt.TargetNamespace = attr.Value
+			break
+		}
+	}
 	return
 }

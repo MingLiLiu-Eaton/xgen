@@ -10,10 +10,12 @@ package xgen
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -144,19 +146,40 @@ func getBuildInTypeByLang(value, lang string) (buildType string, ok bool) {
 	return
 }
 
+func isBuildInTypeByLang(value, lang string) bool {
+	supportLang := map[string]int{
+		"Go":         0,
+		"TypeScript": 1,
+		"C":          2,
+		"Java":       3,
+		"Rust":       4,
+	}
+	idx, ok := supportLang[lang]
+	if !ok {
+		return false
+	}
+	for _, buildInTypes := range BuildInTypes {
+		if buildInTypes[idx] == value {
+			return true
+		}
+	}
+	return false
+}
+
 func getBasefromSimpleType(name string, XSDSchema []interface{}) string {
+	localName := trimNSPrefix(name)
 	for _, ele := range XSDSchema {
 		switch v := ele.(type) {
 		case *SimpleType:
-			if !v.List && !v.Union && v.Name == name {
+			if !v.List && !v.Union && v.Name == localName {
 				return v.Base
 			}
 		case *Attribute:
-			if v.Name == name {
+			if v.Name == localName {
 				return v.Type
 			}
 		case *Element:
-			if v.Name == name {
+			if v.Name == localName {
 				return v.Type
 			}
 		}
@@ -200,6 +223,94 @@ func ToTitle(val string) string {
 	}
 
 	return buf.String()
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	target := make(map[string]string, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+func cloneBoolMap(source map[string]bool) map[string]bool {
+	target := make(map[string]bool, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+func goImportBasePath(packageName string) string {
+	packageName = strings.TrimSpace(packageName)
+	if packageName == "" {
+		return "schema"
+	}
+	return strings.Trim(packageName, "/")
+}
+
+func goPackageName(packageName string) string {
+	return sanitizeGoIdentifier(path.Base(goImportBasePath(packageName)))
+}
+
+func goNamespacePackageName(packageName, namespace string) string {
+	if namespace == "" {
+		return goPackageName(packageName)
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(namespace))
+
+	label := sanitizeGoIdentifier(namespace)
+	if len(label) > 24 {
+		label = label[len(label)-24:]
+	}
+	if label == "" {
+		label = "ns"
+	}
+	return sanitizeGoIdentifier(fmt.Sprintf("%s_%s_%08x", goPackageName(packageName), label, hasher.Sum32()))
+}
+
+func goImportPathForNamespace(packageName, namespace string) string {
+	if namespace == "" {
+		return goImportBasePath(packageName)
+	}
+	return path.Join(goImportBasePath(packageName), goNamespacePackageName(packageName, namespace))
+}
+
+func generatedGoFilename(filePath, inputDir string) string {
+	relativePath := strings.TrimPrefix(filePath, inputDir)
+	relativePath = strings.TrimPrefix(relativePath, string(filepath.Separator))
+	relativePath = strings.TrimPrefix(relativePath, "/")
+	if relativePath == "" || relativePath == "." {
+		relativePath = filepath.Base(filePath)
+	}
+	relativePath = strings.ReplaceAll(relativePath, string(filepath.Separator), "__")
+	return strings.ReplaceAll(relativePath, "/", "__")
+}
+
+func sanitizeGoIdentifier(value string) string {
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(unicode.ToLower(r))
+			lastUnderscore = false
+			continue
+		}
+		if builder.Len() == 0 || lastUnderscore {
+			continue
+		}
+		builder.WriteRune('_')
+		lastUnderscore = true
+	}
+	sanitized := strings.Trim(builder.String(), "_")
+	if sanitized == "" {
+		return "schema"
+	}
+	if firstRune, _ := utf8.DecodeRuneInString(sanitized); unicode.IsDigit(firstRune) {
+		return "_" + sanitized
+	}
+	return sanitized
 }
 
 // callFuncByName calls the no error or only error return function with

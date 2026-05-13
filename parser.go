@@ -27,8 +27,10 @@ type Options struct {
 	InputDir            string
 	OutputDir           string
 	Extract             bool
+	Dependency          bool
 	Lang                string
 	Package             string
+	TargetNamespace     string
 	IncludeMap          map[string]bool
 	LocalNameNSMap      map[string]string
 	NSSchemaLocationMap map[string]string
@@ -90,6 +92,7 @@ func (opt *Options) Parse() (err error) {
 	opt.InGroup = 0
 	opt.InUnion = false
 	opt.InAttributeGroup = false
+	opt.TargetNamespace = ""
 
 	opt.SimpleType = NewStack()
 	opt.ComplexType = NewStack()
@@ -168,17 +171,30 @@ func (opt *Options) Parse() (err error) {
 		opt.ParseFileList[opt.FilePath] = true
 		opt.ParseFileMap[opt.FilePath] = opt.ProtoTree
 		path := filepath.Join(opt.OutputDir, strings.TrimPrefix(opt.FilePath, opt.InputDir))
+		packageName := opt.Package
+		rootImportPath := ""
+		if opt.Lang == "Go" {
+			rootImportPath = goImportBasePath(opt.Package)
+			packageName = goPackageName(opt.Package)
+			if opt.Dependency && opt.TargetNamespace != "" {
+				path = filepath.Join(opt.OutputDir, goNamespacePackageName(opt.Package, opt.TargetNamespace), generatedGoFilename(opt.FilePath, opt.InputDir))
+				packageName = goNamespacePackageName(opt.Package, opt.TargetNamespace)
+			}
+		}
 		if err := PrepareOutputDir(filepath.Dir(path)); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 		generator := &CodeGenerator{
-			Lang:      opt.Lang,
-			Package:   opt.Package,
-			File:      path,
-			ProtoTree: opt.ProtoTree,
-			StructAST: map[string]string{},
-			Hook:      opt.Hook,
+			Lang:            opt.Lang,
+			Package:         packageName,
+			RootImportPath:  rootImportPath,
+			TargetNamespace: opt.TargetNamespace,
+			LocalNameNSMap:  cloneStringMap(opt.LocalNameNSMap),
+			File:            path,
+			ProtoTree:       opt.ProtoTree,
+			StructAST:       map[string]string{},
+			Hook:            opt.Hook,
 		}
 		funcName := fmt.Sprintf("Gen%s", MakeFirstUpperCase(opt.Lang))
 		if err = callFuncByName(generator, funcName, []reflect.Value{}); err != nil {
@@ -188,6 +204,39 @@ func (opt *Options) Parse() (err error) {
 	return
 }
 
+func (opt *Options) qualifyTypeReference(value string) string {
+	prefix := getNSPrefix(value)
+	if prefix == "" {
+		return trimNSPrefix(value)
+	}
+	namespace := opt.parseNS(value)
+	if namespace == "" || namespace == opt.TargetNamespace {
+		return trimNSPrefix(value)
+	}
+	return fmt.Sprintf("%s:%s", prefix, trimNSPrefix(value))
+}
+
+func (opt *Options) qualifyResolvedType(originalValue, resolvedValue string) string {
+	if isBuildInTypeByLang(resolvedValue, opt.Lang) {
+		return resolvedValue
+	}
+	if _, ok := goBuildinType[resolvedValue]; ok {
+		return resolvedValue
+	}
+	if getNSPrefix(resolvedValue) != "" {
+		return opt.qualifyTypeReference(resolvedValue)
+	}
+	prefix := getNSPrefix(originalValue)
+	if prefix == "" {
+		return trimNSPrefix(resolvedValue)
+	}
+	namespace := opt.parseNS(originalValue)
+	if namespace == "" || namespace == opt.TargetNamespace {
+		return trimNSPrefix(resolvedValue)
+	}
+	return fmt.Sprintf("%s:%s", prefix, trimNSPrefix(resolvedValue))
+}
+
 // GetValueType convert XSD schema value type to the build-in type for the
 // given value and proto tree.
 func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueType string, err error) {
@@ -195,11 +244,13 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		valueType = buildType
 		return
 	}
-	valueType = getBasefromSimpleType(trimNSPrefix(value), XSDSchema)
-	if valueType != trimNSPrefix(value) && valueType != "" {
+	valueType = getBasefromSimpleType(value, XSDSchema)
+	if valueType != value && valueType != trimNSPrefix(value) && valueType != "" {
+		valueType = opt.qualifyResolvedType(value, valueType)
 		return
 	}
 	if opt.Extract {
+		valueType = opt.qualifyTypeReference(value)
 		return
 	}
 	schemaLocation := opt.NSSchemaLocationMap[opt.parseNS(value)]
@@ -218,26 +269,29 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		for include := range opt.IncludeMap {
 			parser := NewParser(&Options{
 				FilePath:            filepath.Join(opt.FileDir, include),
+				InputDir:            opt.InputDir,
 				OutputDir:           opt.OutputDir,
 				Extract:             true,
+				Package:             opt.Package,
 				Lang:                opt.Lang,
-				IncludeMap:          opt.IncludeMap,
-				LocalNameNSMap:      opt.LocalNameNSMap,
-				NSSchemaLocationMap: opt.NSSchemaLocationMap,
+				IncludeMap:          cloneBoolMap(opt.IncludeMap),
+				LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+				NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 				ParseFileList:       opt.ParseFileList,
 				ParseFileMap:        opt.ParseFileMap,
 				ProtoTree:           make([]interface{}, 0),
+				RemoteSchema:        opt.RemoteSchema,
 				Hook:                opt.Hook,
 			})
 			if parser.Parse() != nil {
 				return
 			}
-			if vt := getBasefromSimpleType(trimNSPrefix(value), parser.ProtoTree); vt != trimNSPrefix(value) {
-				valueType = vt
+			if vt := getBasefromSimpleType(value, parser.ProtoTree); vt != value && vt != trimNSPrefix(value) {
+				valueType = opt.qualifyResolvedType(value, vt)
 			}
 		}
 		if valueType == "" {
-			valueType = trimNSPrefix(value)
+			valueType = opt.qualifyTypeReference(value)
 		}
 		return
 	}
@@ -246,15 +300,19 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 	if !ok {
 		parser := NewParser(&Options{
 			FilePath:            xsdFile,
+			InputDir:            opt.InputDir,
 			OutputDir:           opt.OutputDir,
 			Extract:             false,
+			Dependency:          true,
+			Package:             opt.Package,
 			Lang:                opt.Lang,
-			IncludeMap:          opt.IncludeMap,
-			LocalNameNSMap:      opt.LocalNameNSMap,
-			NSSchemaLocationMap: opt.NSSchemaLocationMap,
+			IncludeMap:          cloneBoolMap(opt.IncludeMap),
+			LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+			NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 			ParseFileList:       opt.ParseFileList,
 			ParseFileMap:        opt.ParseFileMap,
 			ProtoTree:           make([]interface{}, 0),
+			RemoteSchema:        opt.RemoteSchema,
 			Hook:                opt.Hook,
 		})
 		if parser.Parse() != nil {
@@ -262,26 +320,35 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		}
 		depXSDSchema = parser.ProtoTree
 	}
-	valueType = getBasefromSimpleType(trimNSPrefix(value), depXSDSchema)
-	if valueType != trimNSPrefix(value) && valueType != "" {
+	valueType = getBasefromSimpleType(value, depXSDSchema)
+	if valueType != value && valueType != trimNSPrefix(value) && valueType != "" {
+		valueType = opt.qualifyResolvedType(value, valueType)
 		return
 	}
 	parser := NewParser(&Options{
 		FilePath:            xsdFile,
+		InputDir:            opt.InputDir,
 		OutputDir:           opt.OutputDir,
 		Extract:             true,
+		Package:             opt.Package,
 		Lang:                opt.Lang,
-		IncludeMap:          opt.IncludeMap,
-		LocalNameNSMap:      opt.LocalNameNSMap,
-		NSSchemaLocationMap: opt.NSSchemaLocationMap,
+		IncludeMap:          cloneBoolMap(opt.IncludeMap),
+		LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
+		NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
 		ParseFileList:       opt.ParseFileList,
 		ParseFileMap:        opt.ParseFileMap,
 		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        opt.RemoteSchema,
 		Hook:                opt.Hook,
 	})
 	if parser.Parse() != nil {
 		return
 	}
-	valueType = getBasefromSimpleType(trimNSPrefix(value), parser.ProtoTree)
+	valueType = getBasefromSimpleType(value, parser.ProtoTree)
+	if valueType == value || valueType == trimNSPrefix(value) || valueType == "" {
+		valueType = opt.qualifyTypeReference(value)
+		return
+	}
+	valueType = opt.qualifyResolvedType(value, valueType)
 	return
 }

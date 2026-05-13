@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -737,4 +738,103 @@ func TestOnAddContentHookIsNil(t *testing.T) {
 				"Should not panic when Hook is nil for %s", tt.name)
 		})
 	}
+}
+
+func TestParseGoSeparatesImportedNamespaces(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-namespace-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	rootSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<schema xmlns="http://www.w3.org/2001/XMLSchema"
+	xmlns:root="http://example.com/root"
+	xmlns:alpha="http://example.com/alpha"
+	xmlns:beta="http://example.com/beta"
+	targetNamespace="http://example.com/root"
+	elementFormDefault="qualified">
+	<import namespace="http://example.com/alpha" schemaLocation="alpha.xsd"/>
+	<import namespace="http://example.com/beta" schemaLocation="beta.xsd"/>
+
+	<complexType name="Envelope">
+		<sequence>
+			<element name="alphaValue" type="alpha:SharedType"/>
+			<element name="betaValue" type="beta:SharedType"/>
+		</sequence>
+	</complexType>
+
+	<element name="Envelope" type="root:Envelope"/>
+</schema>`
+	alphaSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<schema xmlns="http://www.w3.org/2001/XMLSchema"
+	xmlns:alpha="http://example.com/alpha"
+	targetNamespace="http://example.com/alpha"
+	elementFormDefault="qualified">
+	<complexType name="SharedType">
+		<sequence>
+			<element name="value" type="string"/>
+		</sequence>
+	</complexType>
+</schema>`
+	betaSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<schema xmlns="http://www.w3.org/2001/XMLSchema"
+	xmlns:beta="http://example.com/beta"
+	targetNamespace="http://example.com/beta"
+	elementFormDefault="qualified">
+	<complexType name="SharedType">
+		<sequence>
+			<element name="count" type="int"/>
+		</sequence>
+	</complexType>
+</schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "root.xsd"), []byte(rootSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "alpha.xsd"), []byte(alphaSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "beta.xsd"), []byte(betaSchema), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "root.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	alphaPkg := goNamespacePackageName("schema", "http://example.com/alpha")
+	betaPkg := goNamespacePackageName("schema", "http://example.com/beta")
+
+	rootGenerated, err := os.ReadFile(filepath.Join(outputDir, "root.xsd.go"))
+	require.NoError(t, err)
+	rootCode := string(rootGenerated)
+	assert.Contains(t, rootCode, fmt.Sprintf("%s %q", alphaPkg, goImportPathForNamespace("schema", "http://example.com/alpha")))
+	assert.Contains(t, rootCode, fmt.Sprintf("%s %q", betaPkg, goImportPathForNamespace("schema", "http://example.com/beta")))
+	assert.Contains(t, rootCode, fmt.Sprintf("*%s.SharedType", alphaPkg))
+	assert.Contains(t, rootCode, fmt.Sprintf("*%s.SharedType", betaPkg))
+
+	alphaGenerated, err := os.ReadFile(filepath.Join(outputDir, alphaPkg, "alpha.xsd.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(alphaGenerated), "package "+alphaPkg)
+
+	betaGenerated, err := os.ReadFile(filepath.Join(outputDir, betaPkg, "beta.xsd.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(betaGenerated), "package "+betaPkg)
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
 }
