@@ -16,9 +16,15 @@ import (
 // OnElement handles parsing event on the element start elements.
 func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (err error) {
 	e := Element{}
+	localElement := opt.ComplexType.Len() > 0 || opt.InGroup > 0 || opt.Choice.Len() > 0
+	explicitUnqualified := false
 	for _, attr := range ele.Attr {
 		if attr.Name.Local == "ref" {
 			e.Name = attr.Value
+			e.Namespace = opt.parseNS(attr.Value)
+			if e.Namespace == "" {
+				e.Namespace = opt.TargetNamespace
+			}
 			if getNSPrefix(attr.Value) != "" {
 				opt.ReferencedElements[attr.Value] = true
 			}
@@ -30,6 +36,15 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 
 		if attr.Name.Local == "name" {
 			e.Name = attr.Value
+		}
+		if attr.Name.Local == "form" {
+			if attr.Value == "qualified" {
+				e.Namespace = opt.TargetNamespace
+			}
+			if attr.Value == "unqualified" {
+				explicitUnqualified = true
+				e.Namespace = ""
+			}
 		}
 		if attr.Name.Local == "type" {
 			e.Type, err = opt.GetValueType(attr.Value, protoTree)
@@ -63,6 +78,9 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 				e.Optional = true
 			}
 		}
+	}
+	if e.Name != "" && e.Namespace == "" && (!localElement || (!explicitUnqualified && opt.ElementFormQualified)) {
+		e.Namespace = opt.TargetNamespace
 	}
 
 	if len(opt.InPluralSequence) > 0 && opt.InPluralSequence[len(opt.InPluralSequence)-1] {

@@ -22,25 +22,27 @@ import (
 // Options holds user-defined overrides and runtime data that are used when
 // parsing from an XSD document.
 type Options struct {
-	FilePath            string
-	FileDir             string
-	InputDir            string
-	OutputDir           string
-	Extract             bool
-	Dependency          bool
-	Lang                string
-	Package             string
-	TargetNamespace     string
-	NamespacePrefixMap  map[string]string
-	ReferencedElements  map[string]bool
-	IncludeMap          map[string]bool
-	LocalNameNSMap      map[string]string
-	NSSchemaLocationMap map[string]string
-	ParseFileList       map[string]bool
-	ParseFileMap        map[string][]interface{}
-	ProtoTree           []interface{}
-	RemoteSchema        map[string][]byte
-	Hook                Hook
+	FilePath               string
+	FileDir                string
+	InputDir               string
+	OutputDir              string
+	Extract                bool
+	Dependency             bool
+	Lang                   string
+	Package                string
+	TargetNamespace        string
+	ElementFormQualified   bool
+	AttributeFormQualified bool
+	NamespacePrefixMap     map[string]string
+	ReferencedElements     map[string]bool
+	IncludeMap             map[string]bool
+	LocalNameNSMap         map[string]string
+	NSSchemaLocationMap    map[string]string
+	ParseFileList          map[string]bool
+	ParseFileMap           map[string][]interface{}
+	ProtoTree              []interface{}
+	RemoteSchema           map[string][]byte
+	Hook                   Hook
 
 	InElement        string
 	CurrentEle       string

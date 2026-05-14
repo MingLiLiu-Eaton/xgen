@@ -19,23 +19,25 @@ import (
 // CodeGenerator holds code generator overrides and runtime data that are used
 // when generate code from proto tree.
 type CodeGenerator struct {
-	Lang              string
-	File              string
-	Field             string
-	Package           string
-	ImportFmt         bool // For Go language
-	ImportRegexp      bool // For Go language
-	ImportStrconv     bool // For Go language
-	ImportTime        bool // For Go language
-	ImportEncodingXML bool // For Go language
-	TargetNamespace   string
-	NamespacePrefix   map[string]string
-	ReferencedNames   map[string]bool
-	LocalNameNSMap    map[string]string
-	ParseFileMap      map[string][]interface{}
-	ProtoTree         []interface{}
-	StructAST         map[string]string
-	Hook              Hook
+	Lang                    string
+	File                    string
+	Field                   string
+	Package                 string
+	ImportFmt               bool // For Go language
+	ImportReflect           bool // For Go language
+	ImportRegexp            bool // For Go language
+	ImportStrconv           bool // For Go language
+	ImportTime              bool // For Go language
+	ImportEncodingXML       bool // For Go language
+	TargetNamespace         string
+	NamespacePrefix         map[string]string
+	ReferencedNames         map[string]bool
+	LocalNameNSMap          map[string]string
+	ParseFileMap            map[string][]interface{}
+	ProtoTree               []interface{}
+	StructAST               map[string]string
+	Hook                    Hook
+	ValidationHelperEmitted bool
 }
 
 var goBuildinType = map[string]bool{
@@ -101,6 +103,9 @@ func (gen *CodeGenerator) GenGo() error {
 	var importLines []string
 	if gen.ImportFmt {
 		importLines = append(importLines, "\t\"fmt\"")
+	}
+	if gen.ImportReflect {
+		importLines = append(importLines, "\t\"reflect\"")
 	}
 	if gen.ImportRegexp {
 		importLines = append(importLines, "\t\"regexp\"")
@@ -249,22 +254,35 @@ func shouldAddGoXMLName(name string, anonymous bool) bool {
 	return anonymous || strings.IndexFunc(name, splitter) >= 0
 }
 
-func (gen *CodeGenerator) goXMLName(name string, anonymous bool) string {
-	if !anonymous {
-		return name
+func (gen *CodeGenerator) goXMLTag(namespace, name string) string {
+	localName := trimNSPrefix(name)
+	if namespace == "" {
+		return localName
 	}
-	prefix := normalizeNamespacePrefixCandidate(gen.NamespacePrefix[gen.TargetNamespace])
-	if prefix == "" {
-		return name
+	return fmt.Sprintf("%s %s", namespace, localName)
+}
+
+func (gen *CodeGenerator) goXMLTagWithOptions(namespace, name string, options ...string) string {
+	tag := gen.goXMLTag(namespace, name)
+	if len(options) == 0 {
+		return tag
 	}
-	qualifiedName := fmt.Sprintf("%s:%s", prefix, name)
-	if gen.ReferencedNames[qualifiedName] {
-		return qualifiedName
+	return tag + strings.Join(options, "")
+}
+
+func (gen *CodeGenerator) goXMLName(name, namespace string, anonymous bool) string {
+	if namespace == "" && (anonymous || getNSPrefix(name) != "") {
+		namespace = gen.goTypeNamespace(name)
 	}
-	if gen.hasQualifiedElementReference(qualifiedName) {
-		return qualifiedName
+	return gen.goXMLTag(namespace, name)
+}
+
+func (gen *CodeGenerator) goXMLStartNameLiteral(namespace, name string) string {
+	localName := trimNSPrefix(name)
+	if namespace == "" {
+		return fmt.Sprintf("xml.Name{Local: %q}", localName)
 	}
-	return name
+	return fmt.Sprintf("xml.Name{Space: %q, Local: %q}", namespace, localName)
 }
 
 func (gen *CodeGenerator) hasQualifiedElementReference(name string) bool {
@@ -380,14 +398,75 @@ func (gen *CodeGenerator) goElementBaseType(name string) string {
 	return gen.goReferenceType(name)
 }
 
-func (gen *CodeGenerator) goElementMethods(typeName, baseType, xmlName string) string {
+func (gen *CodeGenerator) goStructValidationMethods(typeName string) string {
+	gen.ImportEncodingXML = true
+	gen.ImportReflect = true
+	helperName := "validate" + typeName + "Value"
+	return fmt.Sprintf(`
+func %s(value reflect.Value, allowValidator bool) error {
+	if !value.IsValid() {
+		return nil
+	}
+	if value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return nil
+		}
+		return %s(value.Elem(), allowValidator)
+	}
+	if allowValidator && value.CanInterface() {
+		if validator, ok := value.Interface().(interface{ Validate() error }); ok {
+			return validator.Validate()
+		}
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		if value.IsNil() {
+			return nil
+		}
+		return %s(value.Elem(), true)
+	case reflect.Struct:
+		for idx := 0; idx < value.NumField(); idx++ {
+			if value.Type().Field(idx).Name == "XMLName" {
+				continue
+			}
+			if err := %s(value.Field(idx), true); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for idx := 0; idx < value.Len(); idx++ {
+			if err := %s(value.Index(idx), true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (v %s) Validate() error {
+	return %s(reflect.ValueOf(v), false)
+}
+
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	type alias %s
+	var value alias
+	if err := d.DecodeElement(&value, &start); err != nil {
+		return err
+	}
+	*v = %s(value)
+	return v.Validate()
+}
+`, helperName, helperName, helperName, helperName, helperName, typeName, helperName, typeName, typeName, typeName)
+}
+
+func (gen *CodeGenerator) goElementMethods(typeName, baseType string, element *Element) string {
 	gen.ImportEncodingXML = true
 	if baseType == "time.Time" {
 		gen.ImportTime = true
 	}
 	return fmt.Sprintf(`
 func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
-	start.Name.Local = %q
+	start.Name = %s
 	return e.EncodeElement(%s(v), start)
 }
 
@@ -399,7 +478,7 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	*v = %s(value)
 	return nil
 }
-`, typeName, xmlName, baseType, typeName, baseType, typeName)
+`, typeName, gen.goXMLStartNameLiteral(element.Namespace, element.Name), baseType, typeName, baseType, typeName)
 }
 
 // GoSimpleType generates code for simple type XML schema in Go language
@@ -461,7 +540,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		fieldName := gen.goDeclarationName(v.Name, true)
 		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
-			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Anonymous))
+			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Namespace, v.Anonymous))
 		}
 		for _, attrGroup := range v.AttributeGroup {
 			fieldType := getBasefromSimpleType(attrGroup.Ref, gen.ProtoTree)
@@ -487,7 +566,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			if fieldType == "time.Time" {
 				gen.ImportTime = true
 			}
-			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s,attr%s\"`\n", genGoFieldName(attribute.Name, false), fieldType, attribute.Name, optional)
+			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s\"`\n", genGoFieldName(attribute.Name, false), fieldType, gen.goXMLTagWithOptions(attribute.Namespace, attribute.Name, ",attr", optional))
 		}
 		for _, group := range v.Groups {
 			fieldType := gen.goValueFieldType(group.Ref)
@@ -515,7 +594,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			if fieldType == "time.Time" {
 				gen.ImportTime = true
 			}
-			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s%s\"`\n", genGoFieldName(element.Name, false), fieldType, element.Name, optional)
+			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s\"`\n", genGoFieldName(element.Name, false), fieldType, gen.goXMLTagWithOptions(element.Namespace, element.Name, optional))
 		}
 		if len(v.Base) > 0 {
 			// If the type is a built-in type, generate a Value field as chardata.
@@ -543,6 +622,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 
@@ -829,7 +909,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 		fieldName := gen.goDeclarationName(v.Name, true)
 		if shouldAddGoXMLName(v.Name, false) {
 			gen.ImportEncodingXML = true
-			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
+			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, gen.goTypeNamespace(v.Name), false))
 		}
 		for _, element := range v.Elements {
 			var plural string
@@ -866,14 +946,14 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 		fieldName := gen.goDeclarationName(v.Name, true)
 		if shouldAddGoXMLName(v.Name, false) {
 			gen.ImportEncodingXML = true
-			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", v.Name)
+			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, gen.goTypeNamespace(v.Name), false))
 		}
 		for _, attribute := range v.Attributes {
 			var optional string
 			if attribute.Optional {
 				optional = `,omitempty`
 			}
-			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s,attr%s\"`\n", genGoFieldName(attribute.Name, false), gen.goValueFieldType(attribute.Type), attribute.Name, optional)
+			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s\"`\n", genGoFieldName(attribute.Name, false), gen.goValueFieldType(attribute.Type), gen.goXMLTagWithOptions(attribute.Namespace, attribute.Name, ",attr", optional))
 		}
 		content += "}\n"
 		gen.StructAST[v.Name] = content
@@ -883,6 +963,7 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 
@@ -909,7 +990,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goElementMethods(fieldName, declaredType, v.Name)
+		gen.Field += gen.goElementMethods(fieldName, declaredType, v)
 	}
 }
 
@@ -933,6 +1014,7 @@ func (gen *CodeGenerator) GoAttribute(v *Attribute) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 

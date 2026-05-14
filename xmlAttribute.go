@@ -16,9 +16,15 @@ func (opt *Options) OnAttribute(ele xml.StartElement, protoTree []interface{}) (
 	attribute := Attribute{
 		Optional: true,
 	}
+	localAttribute := opt.ComplexType.Len() > 0 || opt.AttributeGroup.Len() > 0
+	explicitUnqualified := false
 	for _, attr := range ele.Attr {
 		if attr.Name.Local == "ref" {
 			attribute.Name = attr.Value
+			attribute.Namespace = opt.parseNS(attr.Value)
+			if attribute.Namespace == "" {
+				attribute.Namespace = opt.TargetNamespace
+			}
 			attribute.Type, err = opt.GetValueType(attr.Value, protoTree)
 			if err != nil {
 				return
@@ -26,6 +32,15 @@ func (opt *Options) OnAttribute(ele xml.StartElement, protoTree []interface{}) (
 		}
 		if attr.Name.Local == "name" {
 			attribute.Name = attr.Value
+		}
+		if attr.Name.Local == "form" {
+			if attr.Value == "qualified" {
+				attribute.Namespace = opt.TargetNamespace
+			}
+			if attr.Value == "unqualified" {
+				explicitUnqualified = true
+				attribute.Namespace = ""
+			}
 		}
 		if attr.Name.Local == "type" {
 			attribute.Type, err = opt.GetValueType(attr.Value, protoTree)
@@ -38,6 +53,9 @@ func (opt *Options) OnAttribute(ele xml.StartElement, protoTree []interface{}) (
 				attribute.Optional = false
 			}
 		}
+	}
+	if attribute.Name != "" && attribute.Namespace == "" && (!localAttribute || (!explicitUnqualified && opt.AttributeFormQualified)) {
+		attribute.Namespace = opt.TargetNamespace
 	}
 	opt.Attribute.Push(&attribute)
 	return

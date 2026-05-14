@@ -17,7 +17,12 @@ func (opt *Options) OnSchema(ele xml.StartElement, protoTree []interface{}) (err
 	for _, attr := range ele.Attr {
 		if attr.Name.Local == "targetNamespace" {
 			opt.TargetNamespace = attr.Value
-			break
+		}
+		if attr.Name.Local == "elementFormDefault" {
+			opt.ElementFormQualified = attr.Value == "qualified"
+		}
+		if attr.Name.Local == "attributeFormDefault" {
+			opt.AttributeFormQualified = attr.Value == "qualified"
 		}
 	}
 	opt.prepareNamespacePrefixMap()

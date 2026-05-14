@@ -34,6 +34,7 @@ type SimpleType struct {
 type Element struct {
 	Doc               string
 	Name              string
+	Namespace         string
 	Wildcard          bool
 	Type              string
 	SubstitutionGroup string
@@ -51,6 +52,7 @@ type Element struct {
 // https://www.w3.org/TR/xmlschema-1/structures.html#element-attribute
 type Attribute struct {
 	Name             string
+	Namespace        string
 	Doc              string
 	Type             string
 	InlineSimpleType *SimpleType
@@ -73,6 +75,7 @@ type Attribute struct {
 type ComplexType struct {
 	Doc            string
 	Name           string
+	Namespace      string
 	Base           string
 	Anonymous      bool
 	Elements       []Element
