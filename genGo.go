@@ -336,6 +336,32 @@ func (gen *CodeGenerator) goSimpleContentFieldType(name string) string {
 	return gen.goResolvedBaseType(name)
 }
 
+func findComplexTypeInTree(name string, protoTree []interface{}) *ComplexType {
+	localName := trimNSPrefix(name)
+	for _, ele := range protoTree {
+		if v, ok := ele.(*ComplexType); ok && v.Name == localName {
+			return v
+		}
+	}
+	return nil
+}
+
+func (gen *CodeGenerator) goFindComplexType(name string) *ComplexType {
+	if complexType := findComplexTypeInTree(name, gen.ProtoTree); complexType != nil {
+		return complexType
+	}
+	for _, tree := range gen.ParseFileMap {
+		if complexType := findComplexTypeInTree(name, tree); complexType != nil {
+			return complexType
+		}
+	}
+	return nil
+}
+
+func (gen *CodeGenerator) goHasNamedType(name string) bool {
+	return gen.goFindSimpleType(name) != nil || gen.goFindComplexType(name) != nil
+}
+
 func (gen *CodeGenerator) goElementBaseType(name string) string {
 	if _, ok := goBuildinType[name]; ok {
 		return name
@@ -813,6 +839,9 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 		fieldType := gen.goElementBaseType(v.Type)
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
 			fieldType = helperName
+		}
+		if v.InlineSimpleType == nil && v.SubstitutionGroup == "" && fieldType == fieldName && !gen.goHasNamedType(v.Type) {
+			fieldType, _ = getBuildInTypeByLang("anyType", "Go")
 		}
 		declaredType := fieldType
 		if v.Plural {

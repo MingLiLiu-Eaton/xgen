@@ -1408,3 +1408,78 @@ func TestTopLevelComplexElementMarshalUsesElementName(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoBareElementDefaultsToAnyTypeWithoutRecursion(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-bare-anytype-element-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/schema"
+	targetNamespace="http://example.com/schema"
+	elementFormDefault="qualified">
+	<xs:element name="components" nillable="true"/>
+	<xs:complexType name="WrapperType">
+		<xs:sequence>
+			<xs:element ref="tns:components" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "bare-anytype.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "bare-anytype.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "bare-anytype.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type TnsComponents string")
+	assert.NotContains(t, code, "type TnsComponents TnsComponents")
+	assert.Contains(t, code, "TnsComponents *TnsComponents `xml:\"tns:components\"`")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestBareElementDefaultsToStringValue(t *testing.T) {
+	value := TnsComponents("part")
+	output, err := xml.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "<components>part</components>" {
+		t.Fatalf("unexpected output: %s", output)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "bare_anytype_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
