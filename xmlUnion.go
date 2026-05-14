@@ -27,7 +27,7 @@ func (opt *Options) OnUnion(ele xml.StartElement, protoTree []interface{}) (err 
 		if attr.Name.Local == "memberTypes" {
 			memberTypes := strings.Split(attr.Value, " ")
 			for _, memberType := range memberTypes {
-				opt.SimpleType.Peek().(*SimpleType).MemberTypes[trimNSPrefix(memberType)], err = opt.GetValueType(memberType, protoTree)
+				opt.SimpleType.Peek().(*SimpleType).MemberTypes[opt.qualifyTypeReference(memberType)], err = opt.GetValueType(memberType, protoTree)
 				if err != nil {
 					return
 				}

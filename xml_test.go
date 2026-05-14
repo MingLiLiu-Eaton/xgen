@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"io/ioutil"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -236,6 +237,87 @@ func TestGenGoUnionReusesNamedMemberValidation(t *testing.T) {
 
 	source := string(output)
 	assert.Contains(t, source, "if err := validateHereColor(value); err == nil {")
+}
+
+func TestGenGoAddsValidationForPatternRestrictedSimpleType(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "pattern"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name: "extensionToken",
+				Base: "string",
+				Restriction: Restriction{
+					Pattern: regexp.MustCompile(`x-\S.*`),
+				},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "pattern.go"))
+	require.NoError(t, err)
+
+	typeName := gen.goTypeIdentifier(gen.TargetNamespace, "extensionToken")
+	source := string(output)
+	assert.Contains(t, source, "import (\n\t\"fmt\"\n\t\"regexp\"\n)")
+	assert.Contains(t, source, "type "+typeName+" string")
+	assert.Contains(t, source, "regexp.MustCompile(\"x-\\\\S.*\").MatchString(value)")
+	assert.Contains(t, source, "func (v "+typeName+") Validate() error")
+}
+
+func TestGenGoUnionReusesPatternMemberValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "union-pattern"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name: "extensionToken",
+				Base: "string",
+				Restriction: Restriction{
+					Pattern: regexp.MustCompile(`x-\S.*`),
+				},
+			},
+			&SimpleType{
+				Name: "signalName",
+				Base: "string",
+				Restriction: Restriction{
+					Enum: []string{"SIMPLE"},
+				},
+			},
+			&SimpleType{
+				Name:        "unionValue",
+				Union:       true,
+				MemberTypes: map[string]string{"signalName": "string", "extensionToken": "string"},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "union-pattern.go"))
+	require.NoError(t, err)
+
+	source := string(output)
+	assert.Contains(t, source, "if err := validateHereSignalName(value); err == nil {")
+	assert.Contains(t, source, "if err := validateHereExtensionToken(value); err == nil {")
 }
 
 func TestParseGoUnionFixture(t *testing.T) {

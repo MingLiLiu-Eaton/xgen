@@ -307,7 +307,7 @@ func (opt *Options) preserveGoTypeReference(value string, XSDSchema []interface{
 		return opt.qualifyTypeReference(value), true
 	}
 	baseType := getBasefromSimpleType(simpleType.Base, XSDSchema)
-	if len(simpleType.Restriction.Enum) > 0 && goSupportsSimpleTypeValidation(baseType) {
+	if (len(simpleType.Restriction.Enum) > 0 || simpleType.Restriction.Pattern != nil) && goSupportsSimpleTypeValidation(baseType) {
 		return opt.qualifyTypeReference(value), true
 	}
 	return "", false

@@ -24,6 +24,7 @@ type CodeGenerator struct {
 	Field             string
 	Package           string
 	ImportFmt         bool // For Go language
+	ImportRegexp      bool // For Go language
 	ImportStrconv     bool // For Go language
 	ImportTime        bool // For Go language
 	ImportEncodingXML bool // For Go language
@@ -100,6 +101,9 @@ func (gen *CodeGenerator) GenGo() error {
 	var importLines []string
 	if gen.ImportFmt {
 		importLines = append(importLines, "\t\"fmt\"")
+	}
+	if gen.ImportRegexp {
+		importLines = append(importLines, "\t\"regexp\"")
 	}
 	if gen.ImportStrconv {
 		importLines = append(importLines, "\t\"strconv\"")
@@ -564,22 +568,24 @@ func goSimpleTypeTextExpr(baseType, valueExpr string) string {
 }
 
 func (gen *CodeGenerator) goSimpleTypeValidationMethods(typeName, baseType string, restriction Restriction) string {
-	if len(restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
+	if (len(restriction.Enum) == 0 && restriction.Pattern == nil) || !goSupportsSimpleTypeValidation(baseType) {
 		return ""
 	}
-	gen.ImportFmt = true
-	validatorName := "validate" + typeName
-	caseValues := make([]string, 0, len(restriction.Enum))
-	for _, enum := range restriction.Enum {
-		caseValues = append(caseValues, fmt.Sprintf("%q", enum))
-	}
-	errorFormat := fmt.Sprintf("%s must be one of [%s], got %%q", typeName, strings.Join(restriction.Enum, ", "))
-	textExpr := goSimpleTypeTextExpr(baseType, "v")
-	unmarshalAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)
-	if baseType != "string" {
-		unmarshalAssignment = fmt.Sprintf("\tvar parsed %s\n\tif _, err := fmt.Sscan(value, &parsed); err != nil {\n\t\treturn err\n\t}\n\t*v = %s(parsed)\n", baseType, typeName)
-	}
-	return fmt.Sprintf(`
+	if len(restriction.Enum) > 0 && restriction.Pattern == nil {
+		gen.ImportFmt = true
+		validatorName := "validate" + typeName
+		caseValues := make([]string, 0, len(restriction.Enum))
+		for _, enum := range restriction.Enum {
+			caseValues = append(caseValues, fmt.Sprintf("%q", enum))
+		}
+		errorFormat := fmt.Sprintf("%s must be one of [%s], got %%q", typeName, strings.Join(restriction.Enum, ", "))
+		textExpr := goSimpleTypeTextExpr(baseType, "v")
+		unmarshalAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)
+		if baseType != "string" {
+			gen.ImportFmt = true
+			unmarshalAssignment = fmt.Sprintf("\tvar parsed %s\n\tif _, err := fmt.Sscan(value, &parsed); err != nil {\n\t\treturn err\n\t}\n\t*v = %s(parsed)\n", baseType, typeName)
+		}
+		return fmt.Sprintf(`
 func %s(value string) error {
 	switch value {
 	case %s:
@@ -609,6 +615,55 @@ func (v *%s) UnmarshalText(text []byte) error {
 %s	return nil
 }
 `, validatorName, strings.Join(caseValues, ", "), errorFormat, typeName, validatorName, textExpr, typeName, textExpr, validatorName, typeName, validatorName, unmarshalAssignment)
+	}
+	validatorName := "validate" + typeName
+	validationChecks := make([]string, 0, 2)
+	if len(restriction.Enum) > 0 {
+		gen.ImportFmt = true
+		caseValues := make([]string, 0, len(restriction.Enum))
+		for _, enum := range restriction.Enum {
+			caseValues = append(caseValues, fmt.Sprintf("%q", enum))
+		}
+		errorFormat := fmt.Sprintf("%s must be one of [%s], got %%q", typeName, strings.Join(restriction.Enum, ", "))
+		validationChecks = append(validationChecks, fmt.Sprintf("\tswitch value {\n\tcase %s:\n\tdefault:\n\t\treturn fmt.Errorf(%q, value)\n\t}", strings.Join(caseValues, ", "), errorFormat))
+	}
+	if restriction.Pattern != nil {
+		gen.ImportFmt = true
+		gen.ImportRegexp = true
+		validationChecks = append(validationChecks, fmt.Sprintf("\tif !regexp.MustCompile(%q).MatchString(value) {\n\t\treturn fmt.Errorf(%q, value)\n\t}", restriction.Pattern.String(), fmt.Sprintf("%s must match pattern %s, got %%q", typeName, restriction.Pattern.String())))
+	}
+	textExpr := goSimpleTypeTextExpr(baseType, "v")
+	unmarshalAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)
+	if baseType != "string" {
+		unmarshalAssignment = fmt.Sprintf("\tvar parsed %s\n\tif _, err := fmt.Sscan(value, &parsed); err != nil {\n\t\treturn err\n\t}\n\t*v = %s(parsed)\n", baseType, typeName)
+		gen.ImportFmt = true
+	}
+	return fmt.Sprintf(`
+func %s(value string) error {
+%s
+	return nil
+}
+
+func (v %s) Validate() error {
+	return %s(%s)
+}
+
+func (v %s) MarshalText() ([]byte, error) {
+	value := %s
+	if err := %s(value); err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (v *%s) UnmarshalText(text []byte) error {
+	value := string(text)
+	if err := %s(value); err != nil {
+		return err
+	}
+%s	return nil
+}
+`, validatorName, strings.Join(validationChecks, "\n"), typeName, validatorName, textExpr, typeName, textExpr, validatorName, typeName, validatorName, unmarshalAssignment)
 }
 
 func findSimpleTypeInTree(name string, protoTree []interface{}) *SimpleType {
@@ -641,11 +696,11 @@ func (gen *CodeGenerator) goSimpleTypeHasValidation(simpleType *SimpleType) bool
 		return true
 	}
 	baseType := gen.goResolvedBaseType(simpleType.Base)
-	return len(simpleType.Restriction.Enum) > 0 && goSupportsSimpleTypeValidation(baseType)
+	return (len(simpleType.Restriction.Enum) > 0 || simpleType.Restriction.Pattern != nil) && goSupportsSimpleTypeValidation(baseType)
 }
 
 func (gen *CodeGenerator) goSimpleTypeValidatorName(name string) string {
-	return "validate" + gen.goTypeIdentifier(gen.TargetNamespace, name)
+	return "validate" + gen.goTypeIdentifier(gen.goTypeNamespace(name), name)
 }
 
 func goSupportsUnionValidation(memberType string) bool {
@@ -672,7 +727,7 @@ func (gen *CodeGenerator) goUnionValidationMethods(typeName string, memberTypes 
 		}
 		memberNames = append(memberNames, memberName)
 		if memberSimpleType := gen.goFindSimpleType(memberName); gen.goSimpleTypeHasValidation(memberSimpleType) {
-			validationChecks = append(validationChecks, fmt.Sprintf("\tif err := %s(value); err == nil {\n\t\treturn nil\n\t}", gen.goSimpleTypeValidatorName(memberSimpleType.Name)))
+			validationChecks = append(validationChecks, fmt.Sprintf("\tif err := %s(value); err == nil {\n\t\treturn nil\n\t}", gen.goSimpleTypeValidatorName(memberName)))
 			continue
 		}
 		if !goSupportsUnionValidation(memberType) {
@@ -752,8 +807,7 @@ func (gen *CodeGenerator) goEnsureInlineSimpleType(ownerTypeName, fieldName stri
 		return ""
 	}
 	if !simpleType.Union {
-		baseType := gen.goResolvedBaseType(simpleType.Base)
-		if len(simpleType.Restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
+		if !gen.goSimpleTypeHasValidation(simpleType) {
 			return ""
 		}
 	}
