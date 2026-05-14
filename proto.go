@@ -32,16 +32,17 @@ type SimpleType struct {
 // mechanism of element substitution groups.
 // https://www.w3.org/TR/xmlschema-1/#cElement_Declarations
 type Element struct {
-	Doc              string
-	Name             string
-	Wildcard         bool
-	Type             string
-	InlineSimpleType *SimpleType
-	Abstract         bool
-	Plural           bool
-	Optional         bool
-	Nillable         bool
-	Default          string
+	Doc               string
+	Name              string
+	Wildcard          bool
+	Type              string
+	SubstitutionGroup string
+	InlineSimpleType  *SimpleType
+	Abstract          bool
+	Plural            bool
+	Optional          bool
+	Nillable          bool
+	Default           string
 }
 
 // Attribute declarations provide for: Local validation of attribute

@@ -1169,3 +1169,80 @@ func TestNamedEnumValidationDuringComplexSimpleContentUnmarshal(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoResolvesImportedSubstitutionGroupTypes(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-substitution-group-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	mainSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:oadr="http://example.com/oadr"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/oadr"
+	elementFormDefault="qualified">
+	<xs:import namespace="http://example.com/ei" schemaLocation="ei.xsd"/>
+	<xs:element name="payload">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="ei:registrationID" minOccurs="0"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>`
+	depSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:element name="registrationID" substitutionGroup="ei:refID"/>
+	<xs:element name="refID" substitutionGroup="ei:uid"/>
+	<xs:element name="uid" type="ei:UidType" abstract="true"/>
+	<xs:simpleType name="UidType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "main.xsd"), []byte(mainSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "ei.xsd"), []byte(depSchema), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "main.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	mainGenerated, err := os.ReadFile(filepath.Join(outputDir, "main.xsd.go"))
+	require.NoError(t, err)
+	mainCode := string(mainGenerated)
+	assert.Contains(t, mainCode, "EiRegistrationID")
+	assert.Contains(t, mainCode, "*string")
+	assert.Contains(t, mainCode, "`xml:\"ei:registrationID\"`")
+	assert.NotContains(t, mainCode, "OadrRegistrationID")
+
+	depGenerated, err := os.ReadFile(filepath.Join(outputDir, "ei.xsd.go"))
+	require.NoError(t, err)
+	depCode := string(depGenerated)
+	assert.Contains(t, depCode, "type EiRegistrationID string")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

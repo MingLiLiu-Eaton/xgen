@@ -37,6 +37,9 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 				return
 			}
 		}
+		if attr.Name.Local == "substitutionGroup" {
+			e.SubstitutionGroup = opt.qualifyTypeReference(attr.Value)
+		}
 		if attr.Name.Local == "maxOccurs" {
 			var maxOccurs int
 			if maxOccurs, err = strconv.Atoi(attr.Value); attr.Value != "unbounded" && err != nil {

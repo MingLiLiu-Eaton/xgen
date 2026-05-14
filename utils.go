@@ -167,7 +167,18 @@ func isBuildInTypeByLang(value, lang string) bool {
 }
 
 func getBasefromSimpleType(name string, XSDSchema []interface{}) string {
+	return getBasefromSimpleTypeWithSeen(name, XSDSchema, map[string]bool{})
+}
+
+func getBasefromSimpleTypeWithSeen(name string, XSDSchema []interface{}, seen map[string]bool) string {
 	localName := trimNSPrefix(name)
+	if localName == "" {
+		return name
+	}
+	if seen[localName] {
+		return name
+	}
+	seen[localName] = true
 	for _, ele := range XSDSchema {
 		switch v := ele.(type) {
 		case *SimpleType:
@@ -179,7 +190,19 @@ func getBasefromSimpleType(name string, XSDSchema []interface{}) string {
 				return v.Type
 			}
 		case *Element:
-			if v.Name == localName {
+			if v.Name != localName {
+				continue
+			}
+			if v.Type != "" && v.Type != name && v.Type != localName {
+				return v.Type
+			}
+			if v.InlineSimpleType != nil && v.InlineSimpleType.Base != "" {
+				return v.InlineSimpleType.Base
+			}
+			if v.SubstitutionGroup != "" {
+				return getBasefromSimpleTypeWithSeen(v.SubstitutionGroup, XSDSchema, seen)
+			}
+			if v.Type != "" {
 				return v.Type
 			}
 		}
