@@ -1577,3 +1577,67 @@ func TestUnionValidationRejectsInvalidValue(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoGlobalAttributeInlineEnumCompilesWithoutStructMethods(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-attribute-inline-enum-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/attr"
+	targetNamespace="http://example.com/attr"
+	elementFormDefault="qualified">
+	<xs:attribute name="space" default="preserve">
+		<xs:simpleType>
+			<xs:restriction base="xs:NCName">
+				<xs:enumeration value="default"/>
+				<xs:enumeration value="preserve"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:attribute>
+	<xs:complexType name="ContainerType">
+		<xs:attribute ref="tns:space" use="optional"/>
+	</xs:complexType>
+	<xs:element name="container" type="tns:ContainerType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "attribute-inline-enum.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "attribute-inline-enum.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "attribute-inline-enum.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type TnsSpaceValue string")
+	assert.Contains(t, code, "type TnsSpace *TnsSpaceValue")
+	assert.NotContains(t, code, "func (v TnsSpace) Validate() error")
+	assert.NotContains(t, code, "func (v *TnsSpace) UnmarshalXML")
+	assert.NotContains(t, code, "func validateTnsSpaceValue(value reflect.Value, allowValidator bool) error")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

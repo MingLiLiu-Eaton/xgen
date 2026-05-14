@@ -401,7 +401,7 @@ func (gen *CodeGenerator) goElementBaseType(name string) string {
 func (gen *CodeGenerator) goStructValidationMethods(typeName string) string {
 	gen.ImportEncodingXML = true
 	gen.ImportReflect = true
-	helperName := "validate" + typeName + "Value"
+	helperName := "validateStructFields" + typeName
 	return fmt.Sprintf(`
 func %s(value reflect.Value, allowValidator bool) error {
 	if !value.IsValid() {
@@ -935,6 +935,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 
@@ -963,7 +964,6 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 
@@ -1014,7 +1014,6 @@ func (gen *CodeGenerator) GoAttribute(v *Attribute) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goStructValidationMethods(fieldName)
 	}
 }
 
