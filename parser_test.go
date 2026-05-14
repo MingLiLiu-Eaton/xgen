@@ -1002,3 +1002,86 @@ func TestParseGoAddsElementSuffixOnReadableNameCollision(t *testing.T) {
 	assert.Contains(t, code, "type EiOptTypeElement string")
 	assert.Contains(t, code, "type EiOptType struct")
 }
+
+func TestParseGoUsesNamedEnumTypesForElementValidation(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-enum-validation-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:simpleType name="EventStatusEnumeratedType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="active"/>
+			<xs:enumeration value="cancelled"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:element name="payload">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="eventStatus" type="ei:EventStatusEnumeratedType"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "enum-validation.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "enum-validation.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "enum-validation.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type EiEventStatusEnumeratedType string")
+	assert.Contains(t, code, "EventStatus *EiEventStatusEnumeratedType")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+)
+
+func TestNamedEnumValidationDuringUnmarshal(t *testing.T) {
+	input := []byte("<payload><eventStatus>invalid</eventStatus></payload>")
+	var payload EiPayload
+	err := xml.Unmarshal(input, &payload)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "EiEventStatusEnumeratedType") {
+		t.Fatalf("expected enum validation error, got %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "enum_validation_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

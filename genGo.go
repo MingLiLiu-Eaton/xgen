@@ -310,6 +310,25 @@ func (gen *CodeGenerator) goFieldType(name string) string {
 	return "interface{}"
 }
 
+func (gen *CodeGenerator) goResolvedBaseType(name string) string {
+	if baseType := getBasefromSimpleType(name, gen.ProtoTree); baseType != name {
+		return baseType
+	}
+	for _, tree := range gen.ParseFileMap {
+		if baseType := getBasefromSimpleType(name, tree); baseType != name {
+			return baseType
+		}
+	}
+	return name
+}
+
+func (gen *CodeGenerator) goValueFieldType(name string) string {
+	if simpleType := gen.goFindSimpleType(name); gen.goSimpleTypeHasValidation(simpleType) {
+		return gen.goFieldType(name)
+	}
+	return gen.goFieldType(gen.goResolvedBaseType(name))
+}
+
 // GoSimpleType generates code for simple type XML schema in Go language
 // syntax.
 func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
@@ -347,7 +366,7 @@ func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
 		return
 	}
 	if _, ok := gen.StructAST[v.Name]; !ok {
-		baseType := getBasefromSimpleType(v.Base, gen.ProtoTree)
+		baseType := gen.goResolvedBaseType(v.Base)
 		content := fmt.Sprintf(" %s\n", gen.goFieldType(baseType))
 		gen.StructAST[v.Name] = content
 		fieldName := gen.goDeclarationName(v.Name, true)
@@ -380,7 +399,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		}
 
 		for _, attribute := range v.Attributes {
-			fieldType := gen.goFieldType(getBasefromSimpleType(attribute.Type, gen.ProtoTree))
+			fieldType := gen.goValueFieldType(attribute.Type)
 			if helperName := gen.goEnsureInlineSimpleType(fieldName, genGoFieldName(attribute.Name, false)+"Attr", attribute.InlineSimpleType); helperName != "" {
 				fieldType = gen.goFieldType(helperName)
 			}
@@ -398,7 +417,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s,attr%s\"`\n", genGoFieldName(attribute.Name, false), fieldType, attribute.Name, optional)
 		}
 		for _, group := range v.Groups {
-			fieldType := gen.goFieldType(getBasefromSimpleType(group.Ref, gen.ProtoTree))
+			fieldType := gen.goValueFieldType(group.Ref)
 			if group.Plural {
 				fieldType = "[]" + fieldType
 			}
@@ -406,7 +425,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		}
 
 		for _, element := range v.Elements {
-			fieldType := gen.goFieldType(getBasefromSimpleType(element.Type, gen.ProtoTree))
+			fieldType := gen.goValueFieldType(element.Type)
 			if helperName := gen.goEnsureInlineSimpleType(fieldName, genGoFieldName(element.Name, false), element.InlineSimpleType); helperName != "" {
 				fieldType = gen.goFieldType(helperName)
 			}
@@ -544,7 +563,7 @@ func (gen *CodeGenerator) goSimpleTypeHasValidation(simpleType *SimpleType) bool
 	if simpleType.Union && len(simpleType.MemberTypes) > 0 {
 		return true
 	}
-	baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
+	baseType := gen.goResolvedBaseType(simpleType.Base)
 	return len(simpleType.Restriction.Enum) > 0 && goSupportsSimpleTypeValidation(baseType)
 }
 
@@ -572,7 +591,7 @@ func (gen *CodeGenerator) goUnionValidationMethods(typeName string, memberTypes 
 		memberName := member.key
 		memberType := member.value
 		if memberType == "" {
-			memberType = getBasefromSimpleType(memberName, gen.ProtoTree)
+			memberType = gen.goResolvedBaseType(memberName)
 		}
 		memberNames = append(memberNames, memberName)
 		if memberSimpleType := gen.goFindSimpleType(memberName); gen.goSimpleTypeHasValidation(memberSimpleType) {
@@ -656,7 +675,7 @@ func (gen *CodeGenerator) goEnsureInlineSimpleType(ownerTypeName, fieldName stri
 		return ""
 	}
 	if !simpleType.Union {
-		baseType := getBasefromSimpleType(simpleType.Base, gen.ProtoTree)
+		baseType := gen.goResolvedBaseType(simpleType.Base)
 		if len(simpleType.Restriction.Enum) == 0 || !goSupportsSimpleTypeValidation(baseType) {
 			return ""
 		}
@@ -686,7 +705,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 			if element.Plural {
 				plural = "[]"
 			}
-			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(element.Name, false), plural, gen.goFieldType(getBasefromSimpleType(element.Type, gen.ProtoTree)))
+			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(element.Name, false), plural, gen.goValueFieldType(element.Type))
 		}
 
 		for _, group := range v.Groups {
@@ -694,7 +713,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 			if group.Plural {
 				plural = "[]"
 			}
-			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(group.Name, false), plural, gen.goFieldType(getBasefromSimpleType(group.Ref, gen.ProtoTree)))
+			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(group.Name, false), plural, gen.goValueFieldType(group.Ref))
 		}
 
 		content += "}\n"
@@ -723,7 +742,7 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 			if attribute.Optional {
 				optional = `,omitempty`
 			}
-			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s,attr%s\"`\n", genGoFieldName(attribute.Name, false), gen.goFieldType(getBasefromSimpleType(attribute.Type, gen.ProtoTree)), attribute.Name, optional)
+			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s,attr%s\"`\n", genGoFieldName(attribute.Name, false), gen.goValueFieldType(attribute.Type), attribute.Name, optional)
 		}
 		content += "}\n"
 		gen.StructAST[v.Name] = content
@@ -740,7 +759,7 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 func (gen *CodeGenerator) GoElement(v *Element) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		fieldName := gen.goElementDeclarationName(v.Name)
-		fieldType := gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree))
+		fieldType := gen.goValueFieldType(v.Type)
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
 			fieldType = gen.goFieldType(helperName)
 		}
@@ -763,7 +782,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 func (gen *CodeGenerator) GoAttribute(v *Attribute) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		fieldName := gen.goDeclarationName(v.Name, true)
-		fieldType := gen.goFieldType(getBasefromSimpleType(v.Type, gen.ProtoTree))
+		fieldType := gen.goValueFieldType(v.Type)
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
 			fieldType = gen.goFieldType(helperName)
 		}

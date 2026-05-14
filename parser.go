@@ -295,12 +295,33 @@ func (opt *Options) qualifyResolvedType(originalValue, resolvedValue string) str
 	return fmt.Sprintf("%s:%s", prefix, trimNSPrefix(resolvedValue))
 }
 
+func (opt *Options) preserveGoTypeReference(value string, XSDSchema []interface{}) (string, bool) {
+	if opt.Lang != "Go" {
+		return "", false
+	}
+	simpleType := findSimpleTypeInTree(value, XSDSchema)
+	if simpleType == nil {
+		return "", false
+	}
+	if simpleType.Union && len(simpleType.MemberTypes) > 0 {
+		return opt.qualifyTypeReference(value), true
+	}
+	baseType := getBasefromSimpleType(simpleType.Base, XSDSchema)
+	if len(simpleType.Restriction.Enum) > 0 && goSupportsSimpleTypeValidation(baseType) {
+		return opt.qualifyTypeReference(value), true
+	}
+	return "", false
+}
+
 // GetValueType convert XSD schema value type to the build-in type for the
 // given value and proto tree.
 func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueType string, err error) {
 	if buildType, ok := getBuildInTypeByLang(trimNSPrefix(value), opt.Lang); ok {
 		valueType = buildType
 		return
+	}
+	if valueType, ok := opt.preserveGoTypeReference(value, XSDSchema); ok {
+		return valueType, nil
 	}
 	valueType = getBasefromSimpleType(value, XSDSchema)
 	if valueType != value && valueType != trimNSPrefix(value) && valueType != "" {
@@ -346,7 +367,9 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 			if parser.Parse() != nil {
 				return
 			}
-			if vt := getBasefromSimpleType(value, parser.ProtoTree); vt != value && vt != trimNSPrefix(value) {
+			if vt, ok := opt.preserveGoTypeReference(value, parser.ProtoTree); ok {
+				valueType = vt
+			} else if vt := getBasefromSimpleType(value, parser.ProtoTree); vt != value && vt != trimNSPrefix(value) {
 				valueType = opt.qualifyResolvedType(value, vt)
 			}
 		}
@@ -382,6 +405,9 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		}
 		depXSDSchema = parser.ProtoTree
 	}
+	if valueType, ok = opt.preserveGoTypeReference(value, depXSDSchema); ok {
+		return valueType, nil
+	}
 	valueType = getBasefromSimpleType(value, depXSDSchema)
 	if valueType != value && valueType != trimNSPrefix(value) && valueType != "" {
 		valueType = opt.qualifyResolvedType(value, valueType)
@@ -407,6 +433,9 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 	})
 	if parser.Parse() != nil {
 		return
+	}
+	if valueType, ok = opt.preserveGoTypeReference(value, parser.ProtoTree); ok {
+		return valueType, nil
 	}
 	valueType = getBasefromSimpleType(value, parser.ProtoTree)
 	if valueType == value || valueType == trimNSPrefix(value) || valueType == "" {
