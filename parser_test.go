@@ -1246,3 +1246,165 @@ func TestParseGoResolvesImportedSubstitutionGroupTypes(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoTopLevelSimpleElementUsesElementNameDuringMarshal(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-top-level-simple-element-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:simpleType name="EventStatusEnumeratedType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="completed"/>
+			<xs:enumeration value="cancelled"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:element name="eventStatus" type="ei:EventStatusEnumeratedType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "event-status.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "event-status.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "event-status.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type EiEventStatus EiEventStatusEnumeratedType")
+	assert.Contains(t, code, "func (v EiEventStatus) MarshalXML")
+	assert.Contains(t, code, "start.Name.Local = \"eventStatus\"")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestTopLevelSimpleElementMarshalUsesElementName(t *testing.T) {
+	statusValue := EiEventStatusEnumeratedType("completed")
+	status := EiEventStatus(statusValue)
+	output, err := xml.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "<eventStatus>completed</eventStatus>" {
+		t.Fatalf("unexpected output: %s", output)
+	}
+}
+
+func TestTopLevelSimpleElementUnmarshalUsesReferencedValidation(t *testing.T) {
+	var status EiEventStatus
+	err := xml.Unmarshal([]byte("<eventStatus>invalid</eventStatus>"), &status)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "event_status_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func TestParseGoTopLevelComplexElementUsesElementNameDuringMarshal(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-top-level-complex-element-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:complexType name="PayloadType">
+		<xs:sequence>
+			<xs:element name="value" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="payload" type="ei:PayloadType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "payload.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "payload.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "payload.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type EiPayload EiPayloadType")
+	assert.Contains(t, code, "func (v EiPayload) MarshalXML")
+	assert.Contains(t, code, "start.Name.Local = \"payload\"")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestTopLevelComplexElementMarshalUsesElementName(t *testing.T) {
+	payload := EiPayload{
+		Value: "x",
+	}
+	output, err := xml.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "<payload><value>x</value></payload>" {
+		t.Fatalf("unexpected output: %s", output)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "payload_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

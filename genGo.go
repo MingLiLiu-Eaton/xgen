@@ -336,6 +336,42 @@ func (gen *CodeGenerator) goSimpleContentFieldType(name string) string {
 	return gen.goResolvedBaseType(name)
 }
 
+func (gen *CodeGenerator) goElementBaseType(name string) string {
+	if _, ok := goBuildinType[name]; ok {
+		return name
+	}
+	if simpleType := gen.goFindSimpleType(name); simpleType != nil {
+		return gen.goReferenceType(name)
+	}
+	baseType := gen.goResolvedBaseType(name)
+	if _, ok := goBuildinType[baseType]; ok {
+		return baseType
+	}
+	return gen.goReferenceType(name)
+}
+
+func (gen *CodeGenerator) goElementMethods(typeName, baseType, xmlName string) string {
+	gen.ImportEncodingXML = true
+	if baseType == "time.Time" {
+		gen.ImportTime = true
+	}
+	return fmt.Sprintf(`
+func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name.Local = %q
+	return e.EncodeElement(%s(v), start)
+}
+
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var value %s
+	if err := d.DecodeElement(&value, &start); err != nil {
+		return err
+	}
+	*v = %s(value)
+	return nil
+}
+`, typeName, xmlName, baseType, typeName, baseType, typeName)
+}
+
 // GoSimpleType generates code for simple type XML schema in Go language
 // syntax.
 func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
@@ -774,15 +810,15 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 func (gen *CodeGenerator) GoElement(v *Element) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		fieldName := gen.goElementDeclarationName(v.Name)
-		fieldType := gen.goValueFieldType(v.Type)
+		fieldType := gen.goElementBaseType(v.Type)
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
-			fieldType = gen.goFieldType(helperName)
+			fieldType = helperName
 		}
-		var plural string
+		declaredType := fieldType
 		if v.Plural {
-			plural = "[]"
+			declaredType = "[]" + declaredType
 		}
-		content := fmt.Sprintf("\t%s%s\n", plural, fieldType)
+		content := fmt.Sprintf(" %s\n", declaredType)
 		gen.StructAST[v.Name] = content
 
 		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
@@ -790,6 +826,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
+		gen.Field += gen.goElementMethods(fieldName, declaredType, v.Name)
 	}
 }
 
