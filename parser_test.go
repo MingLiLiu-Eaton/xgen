@@ -1641,3 +1641,75 @@ func TestParseGoGlobalAttributeInlineEnumCompilesWithoutStructMethods(t *testing
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoStructValidationSkipsNilOptionalPointers(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-nil-validation-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/nil"
+	targetNamespace="http://example.com/nil"
+	elementFormDefault="qualified">
+	<xs:complexType name="ChildType">
+		<xs:sequence>
+			<xs:element name="value" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContainerType">
+		<xs:sequence>
+			<xs:element name="child" type="tns:ChildType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="root" type="tns:ContainerType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "nil-validation.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "nil-validation.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestStructValidationSkipsNilOptionalPointers(t *testing.T) {
+	var root TnsContainerType
+	if err := xml.Unmarshal([]byte("<tns:root xmlns:tns=\"http://example.com/nil\"></tns:root>"), &root); err != nil {
+		t.Fatal(err)
+	}
+	if root.Child != nil {
+		t.Fatalf("expected nil child, got %+v", root.Child)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "nil_validation_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

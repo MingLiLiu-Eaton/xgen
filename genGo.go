@@ -413,17 +413,18 @@ func %s(value reflect.Value, allowValidator bool) error {
 		}
 		return %s(value.Elem(), allowValidator)
 	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil
+		}
+		return %s(value.Elem(), true)
+	}
 	if allowValidator && value.CanInterface() {
 		if validator, ok := value.Interface().(interface{ Validate() error }); ok {
 			return validator.Validate()
 		}
 	}
 	switch value.Kind() {
-	case reflect.Pointer:
-		if value.IsNil() {
-			return nil
-		}
-		return %s(value.Elem(), true)
 	case reflect.Struct:
 		for idx := 0; idx < value.NumField(); idx++ {
 			if value.Type().Field(idx).Name == "XMLName" {
