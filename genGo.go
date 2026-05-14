@@ -329,6 +329,13 @@ func (gen *CodeGenerator) goValueFieldType(name string) string {
 	return gen.goFieldType(gen.goResolvedBaseType(name))
 }
 
+func (gen *CodeGenerator) goSimpleContentFieldType(name string) string {
+	if simpleType := gen.goFindSimpleType(name); gen.goSimpleTypeHasValidation(simpleType) {
+		return gen.goReferenceType(name)
+	}
+	return gen.goResolvedBaseType(name)
+}
+
 // GoSimpleType generates code for simple type XML schema in Go language
 // syntax.
 func (gen *CodeGenerator) GoSimpleType(v *SimpleType) {
@@ -446,9 +453,17 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		}
 		if len(v.Base) > 0 {
 			// If the type is a built-in type, generate a Value field as chardata.
+			// If the type is a simple type, keep it as chardata so text unmarshalling
+			// still triggers its validation methods.
 			// If it's not built-in one, embed the base type in the struct for the child type
 			// to effectively inherit all of the base type's fields
-			if isGoBuiltInType(v.Base) {
+			if simpleType := gen.goFindSimpleType(v.Base); simpleType != nil {
+				fieldType := gen.goSimpleContentFieldType(v.Base)
+				if fieldType == "time.Time" {
+					gen.ImportTime = true
+				}
+				content += fmt.Sprintf("\tValue\t%s\t`xml:\",chardata\"`\n", fieldType)
+			} else if isGoBuiltInType(v.Base) {
 				content += fmt.Sprintf("\tValue\t%s\t`xml:\",chardata\"`\n", gen.goFieldType(v.Base))
 			} else {
 				content += fmt.Sprintf("\t%s\n", gen.goFieldType(v.Base))
