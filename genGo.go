@@ -398,9 +398,18 @@ func (gen *CodeGenerator) goElementBaseType(name string) string {
 	return gen.goReferenceType(name)
 }
 
-func (gen *CodeGenerator) goStructValidationMethods(typeName string) string {
+func goRequiredPointerFieldCheck(typeName, fieldName string) string {
+	return fmt.Sprintf("\tif v.%s == nil {\n\t\treturn fmt.Errorf(%q)\n\t}", fieldName, typeName+"."+fieldName+" is required")
+}
+
+func (gen *CodeGenerator) goStructValidationMethods(typeName string, requiredChecks []string) string {
 	gen.ImportEncodingXML = true
 	gen.ImportReflect = true
+	validateBody := fmt.Sprintf("\treturn %s(reflect.ValueOf(v), false)", "validateStructFields"+typeName)
+	if len(requiredChecks) > 0 {
+		gen.ImportFmt = true
+		validateBody = strings.Join(requiredChecks, "\n") + "\n" + validateBody
+	}
 	helperName := "validateStructFields" + typeName
 	return fmt.Sprintf(`
 func %s(value reflect.Value, allowValidator bool) error {
@@ -445,7 +454,7 @@ func %s(value reflect.Value, allowValidator bool) error {
 }
 
 func (v %s) Validate() error {
-	return %s(reflect.ValueOf(v), false)
+	%s
 }
 
 func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
@@ -457,7 +466,7 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	*v = %s(value)
 	return v.Validate()
 }
-`, helperName, helperName, helperName, helperName, helperName, typeName, helperName, typeName, typeName, typeName)
+`, helperName, helperName, helperName, helperName, helperName, typeName, validateBody, typeName, typeName, typeName)
 }
 
 func (gen *CodeGenerator) goElementMethods(typeName, baseType string, element *Element) string {
@@ -539,6 +548,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := " struct {\n"
 		fieldName := gen.goDeclarationName(v.Name, true)
+		requiredChecks := make([]string, 0)
 		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Namespace, v.Anonymous))
@@ -566,6 +576,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			}
 			if fieldType == "time.Time" {
 				gen.ImportTime = true
+			}
+			if !attribute.Optional && strings.HasPrefix(fieldType, "*") {
+				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, genGoFieldName(attribute.Name, false)+"Attr"))
 			}
 			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s\"`\n", genGoFieldName(attribute.Name, false), fieldType, gen.goXMLTagWithOptions(attribute.Namespace, attribute.Name, ",attr", optional))
 		}
@@ -595,6 +608,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			if fieldType == "time.Time" {
 				gen.ImportTime = true
 			}
+			if !element.Optional && !element.Plural && strings.HasPrefix(fieldType, "*") {
+				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, genGoFieldName(element.Name, false)))
+			}
 			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s\"`\n", genGoFieldName(element.Name, false), fieldType, gen.goXMLTagWithOptions(element.Namespace, element.Name, optional))
 		}
 		if len(v.Base) > 0 {
@@ -623,7 +639,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goStructValidationMethods(fieldName)
+		gen.Field += gen.goStructValidationMethods(fieldName, requiredChecks)
 	}
 }
 
@@ -908,6 +924,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		content := " struct {\n"
 		fieldName := gen.goDeclarationName(v.Name, true)
+		requiredChecks := make([]string, 0)
 		if shouldAddGoXMLName(v.Name, false) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, gen.goTypeNamespace(v.Name), false))
@@ -917,7 +934,11 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 			if element.Plural {
 				plural = "[]"
 			}
-			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(element.Name, false), plural, gen.goValueFieldType(element.Type))
+			fieldType := gen.goValueFieldType(element.Type)
+			if !element.Optional && !element.Plural && strings.HasPrefix(fieldType, "*") {
+				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, genGoFieldName(element.Name, false)))
+			}
+			content += fmt.Sprintf("\t%s\t%s%s\n", genGoFieldName(element.Name, false), plural, fieldType)
 		}
 
 		for _, group := range v.Groups {
@@ -936,7 +957,7 @@ func (gen *CodeGenerator) GoGroup(v *Group) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goStructValidationMethods(fieldName)
+		gen.Field += gen.goStructValidationMethods(fieldName, requiredChecks)
 	}
 }
 
