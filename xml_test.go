@@ -313,8 +313,39 @@ func TestGenGoAddsValidationForPatternRestrictedSimpleType(t *testing.T) {
 	source := string(output)
 	assert.Contains(t, source, "import (\n\t\"fmt\"\n\t\"regexp\"\n)")
 	assert.Contains(t, source, "type "+typeName+" string")
-	assert.Contains(t, source, "regexp.MustCompile(\"x-\\\\S.*\").MatchString(value)")
+	assert.Contains(t, source, "regexp.MustCompile(`x-\\S.*`).MatchString(value)")
 	assert.Contains(t, source, "func (v "+typeName+") Validate() error")
+}
+
+func TestGenGoPreservesPatternBackslashes(t *testing.T) {
+	tempDir := t.TempDir()
+	gen := &CodeGenerator{
+		File:            filepath.Join(tempDir, "pattern-digits"),
+		Package:         "schema",
+		TargetNamespace: "http://example.org/",
+		NamespacePrefix: map[string]string{
+			"http://example.org/": "here",
+		},
+		ReferencedNames: map[string]bool{},
+		LocalNameNSMap:  map[string]string{},
+		ParseFileMap:    map[string][]interface{}{},
+		ProtoTree: []interface{}{
+			&SimpleType{
+				Name: "digitsOnly",
+				Base: "string",
+				Restriction: Restriction{
+					Pattern: regexp.MustCompile(`\d+`),
+				},
+			},
+		},
+		StructAST: map[string]string{},
+	}
+
+	require.NoError(t, gen.GenGo())
+	output, err := ioutil.ReadFile(filepath.Join(tempDir, "pattern-digits.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(output), "regexp.MustCompile(`\\d+`).MatchString(value)")
 }
 
 func TestGenGoUnionReusesPatternMemberValidation(t *testing.T) {

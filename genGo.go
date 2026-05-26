@@ -13,6 +13,7 @@ import (
 	"go/format"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -664,6 +665,13 @@ func goSimpleTypeTextExpr(baseType, valueExpr string) string {
 	return fmt.Sprintf("fmt.Sprint(%s(%s))", baseType, valueExpr)
 }
 
+func goRegexpLiteral(pattern string) string {
+	if !strings.Contains(pattern, "`") {
+		return "`" + pattern + "`"
+	}
+	return strconv.Quote(pattern)
+}
+
 func (gen *CodeGenerator) goSimpleTypeValidationMethods(typeName, baseType string, restriction Restriction) string {
 	if (len(restriction.Enum) == 0 && restriction.Pattern == nil) || !goSupportsSimpleTypeValidation(baseType) {
 		return ""
@@ -727,7 +735,8 @@ func (v *%s) UnmarshalText(text []byte) error {
 	if restriction.Pattern != nil {
 		gen.ImportFmt = true
 		gen.ImportRegexp = true
-		validationChecks = append(validationChecks, fmt.Sprintf("\tif !regexp.MustCompile(%q).MatchString(value) {\n\t\treturn fmt.Errorf(%q, value)\n\t}", restriction.Pattern.String(), fmt.Sprintf("%s must match pattern %s, got %%q", typeName, restriction.Pattern.String())))
+		pattern := restriction.Pattern.String()
+		validationChecks = append(validationChecks, fmt.Sprintf("\tif !regexp.MustCompile(%s).MatchString(value) {\n\t\treturn fmt.Errorf(%q, value)\n\t}", goRegexpLiteral(pattern), fmt.Sprintf("%s must match pattern %s, got %%q", typeName, pattern)))
 	}
 	textExpr := goSimpleTypeTextExpr(baseType, "v")
 	unmarshalAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)

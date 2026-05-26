@@ -1536,7 +1536,7 @@ func TestParseGoUnionValidationCoversEnumAndPatternMembers(t *testing.T) {
 	generated, err := os.ReadFile(filepath.Join(outputDir, "union-pattern.xsd.go"))
 	require.NoError(t, err)
 	code := string(generated)
-	assert.Contains(t, code, "regexp.MustCompile(\"x-\\\\S.*\").MatchString(value)")
+	assert.Contains(t, code, "regexp.MustCompile(`x-\\S.*`).MatchString(value)")
 	assert.Contains(t, code, "if err := validateTnsSignalNameEnumeratedType(value); err == nil {")
 	assert.Contains(t, code, "if err := validateTnsExtensionTokenType(value); err == nil {")
 
@@ -1571,6 +1571,82 @@ func TestUnionValidationRejectsInvalidValue(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "union_pattern_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func TestParseGoPatternPreservesBackslashes(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-pattern-backslash-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/pattern"
+	targetNamespace="http://example.com/pattern"
+	elementFormDefault="qualified">
+	<xs:simpleType name="DigitsOnlyType">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="\d+"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:element name="digits" type="tns:DigitsOnlyType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "pattern-backslash.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "pattern-backslash.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "pattern-backslash.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "regexp.MustCompile(`\\d+`).MatchString(value)")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestPatternValidationAcceptsDigits(t *testing.T) {
+	var value TnsDigits
+	if err := xml.Unmarshal([]byte("<digits>123</digits>"), &value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPatternValidationRejectsNonDigits(t *testing.T) {
+	var value TnsDigits
+	if err := xml.Unmarshal([]byte("<digits>abc</digits>"), &value); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "pattern_backslash_runtime_test.go"), []byte(runtimeTest), 0o644))
 
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = outputDir
