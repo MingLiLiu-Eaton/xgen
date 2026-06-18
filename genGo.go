@@ -752,10 +752,16 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 func (gen *CodeGenerator) goSubstitutionFieldWrapper(typeName string, field goComplexElementField) string {
 	gen.ImportEncodingXML = true
 	gen.ImportFmt = true
-	headType := gen.goElementTypeNameFor(gen.goElementNamespace(&field.Element), field.Element.Name)
+	headType := typeName + field.FieldName + "SubstitutionGroupMember"
+	markerName := "is" + headType
+	content := fmt.Sprintf("type %s interface {\n\t%s()\n}\n", headType, markerName)
+	for _, member := range field.SubstitutionMembers {
+		memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+		content += fmt.Sprintf("\nfunc (*%s) %s() {}\n", memberType, markerName)
+	}
 	if field.Plural {
 		typeName = typeName + field.FieldName + "SubstitutionGroup"
-		content := fmt.Sprintf("type %s []%s\n", typeName, headType)
+		content += fmt.Sprintf("type %s []%s\n", typeName, headType)
 		content += fmt.Sprintf(`
 func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	switch start.Name {
@@ -792,7 +798,7 @@ func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 		return content
 	}
 	typeName = typeName + field.FieldName + "SubstitutionGroup"
-	content := fmt.Sprintf("type %s struct {\n\tValue %s\n}\n", typeName, headType)
+	content += fmt.Sprintf("type %s struct {\n\tValue %s\n}\n", typeName, headType)
 	content += fmt.Sprintf(`
 func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	switch start.Name {
@@ -916,7 +922,7 @@ func (gen *CodeGenerator) goElementMethods(typeName, baseType string, element *E
 		gen.ImportTime = true
 	}
 	validateMethod := ""
-	if !isGoBuiltInType(strings.TrimPrefix(baseType, "[]")) {
+	if gen.goTypeHasValidate(baseType) {
 		validateMethod = fmt.Sprintf(`
 func (v %s) Validate() error {
 	return %s(v).Validate()
@@ -939,6 +945,16 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	return nil
 }
 `, typeName, gen.goXMLStartNameLiteral(element.Namespace, element.Name), baseType, validateMethod, typeName, baseType, typeName)
+}
+
+func (gen *CodeGenerator) goTypeHasValidate(name string) bool {
+	if name == "" || isGoBuiltInType(strings.TrimPrefix(name, "[]")) || strings.HasPrefix(name, "[]") {
+		return false
+	}
+	if simpleType := gen.goFindSimpleType(name); simpleType != nil {
+		return gen.goSimpleTypeHasValidation(simpleType)
+	}
+	return gen.goFindComplexType(name) != nil
 }
 
 func (gen *CodeGenerator) goSubstitutionGroupInterface(typeName string, element *Element) string {

@@ -1583,6 +1583,166 @@ func TestParseGoFlattenedBaseFieldsPreserveOwnerNamespace(t *testing.T) {
 	require.NoError(t, err, string(output))
 }
 
+func TestParseGoImportedConcreteHeadUsesWrapperInterface(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-imported-concrete-head-wrapper-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	mainSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:oadr="http://example.com/oadr"
+	xmlns:emix="http://example.com/emix"
+	targetNamespace="http://example.com/oadr"
+	elementFormDefault="qualified">
+	<xs:import namespace="http://example.com/emix" schemaLocation="emix.xsd"/>
+	<xs:complexType name="FooType">
+		<xs:sequence>
+			<xs:element name="value" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="foo" type="oadr:FooType" substitutionGroup="emix:itemBase"/>
+	<xs:complexType name="ContainerType">
+		<xs:sequence>
+			<xs:element ref="emix:itemBase" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="container" type="oadr:ContainerType"/>
+</xs:schema>`
+	depSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:emix="http://example.com/emix"
+	targetNamespace="http://example.com/emix"
+	elementFormDefault="qualified">
+	<xs:complexType name="ItemBaseType">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="itemBase" type="emix:ItemBaseType" abstract="true"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "oadr.xsd"), []byte(mainSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "emix.xsd"), []byte(depSchema), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "oadr.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "oadr.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type OadrContainerTypeEmixItemBaseSubstitutionGroupMember interface")
+	assert.Contains(t, code, "Value OadrContainerTypeEmixItemBaseSubstitutionGroupMember")
+	assert.NotContains(t, code, "Value EmixItemBase")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestImportedConcreteHeadWrapperUsesLocalInterface(t *testing.T) {
+	input := []byte("<container xmlns=\"http://example.com/oadr\"><foo><value>x</value></foo></container>")
+	var container OadrContainer
+	if err := xml.Unmarshal(input, &container); err != nil {
+		t.Fatal(err)
+	}
+	foo, ok := container.EmixItemBase.Get().(*OadrFoo)
+	if !ok {
+		t.Fatalf("expected *OadrFoo, got %T", container.EmixItemBase.Get())
+	}
+	if foo.Value != "x" {
+		t.Fatalf("unexpected value: %#v", foo)
+	}
+	output, err := xml.Marshal(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output) == 0 {
+		t.Fatal("expected marshal output")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "imported_concrete_head_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func TestParseGoTopLevelListElementDoesNotForwardValidate(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-list-element-validate-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:gml="http://www.opengis.net/gml/3.2"
+	targetNamespace="http://www.opengis.net/gml/3.2"
+	elementFormDefault="qualified">
+	<xs:simpleType name="doubleList">
+		<xs:list itemType="xs:double"/>
+	</xs:simpleType>
+	<xs:element name="posList" type="gml:doubleList"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "gml.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "gml.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "gml.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type GmlDoubleList []float64")
+	assert.Contains(t, code, "type GmlPosList GmlDoubleList")
+	assert.NotContains(t, code, "GmlDoubleList(v).Validate()")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func TestParseGoTopLevelSimpleElementUsesElementNameDuringMarshal(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-top-level-simple-element-*")
 	require.NoError(t, err)
