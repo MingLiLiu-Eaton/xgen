@@ -1248,6 +1248,147 @@ func TestParseGoResolvesImportedSubstitutionGroupTypes(t *testing.T) {
 	require.NoError(t, err, string(output))
 }
 
+func TestParseGoSubstitutionGroupPolymorphism(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-substitution-group-polymorphism-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/animals"
+	targetNamespace="http://example.com/animals"
+	elementFormDefault="qualified">
+	<xs:complexType name="AnimalType">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DogType">
+		<xs:complexContent>
+			<xs:extension base="tns:AnimalType">
+				<xs:sequence>
+					<xs:element name="barkVolume" type="xs:int"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CatType">
+		<xs:complexContent>
+			<xs:extension base="tns:AnimalType">
+				<xs:sequence>
+					<xs:element name="lives" type="xs:int"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="animal" type="tns:AnimalType" abstract="true"/>
+	<xs:element name="dog" type="tns:DogType" substitutionGroup="tns:animal"/>
+	<xs:element name="cat" type="tns:CatType" substitutionGroup="tns:animal"/>
+	<xs:complexType name="ZooType">
+		<xs:sequence>
+			<xs:element ref="tns:animal" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="zoo" type="tns:ZooType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "animals.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "animals.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "animals.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type TnsAnimal interface")
+	assert.Contains(t, code, "TnsAnimal TnsZooTypeTnsAnimalSubstitutionGroup")
+	assert.Contains(t, code, "case xml.Name{Space: \"http://example.com/animals\", Local: \"dog\"}:")
+	assert.Contains(t, code, "case xml.Name{Space: \"http://example.com/animals\", Local: \"cat\"}:")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+)
+
+func TestSubstitutionGroupUnmarshalDispatchesToConcreteMembers(t *testing.T) {
+	input := []byte("<zoo xmlns=\"http://example.com/animals\"><dog><name>Fido</name><barkVolume>7</barkVolume></dog><cat><name>Mog</name><lives>9</lives></cat></zoo>")
+	var zoo TnsZoo
+	if err := xml.Unmarshal(input, &zoo); err != nil {
+		t.Fatal(err)
+	}
+	animals := zoo.TnsAnimal.Values()
+	if len(animals) != 2 {
+		t.Fatalf("expected 2 animals, got %d", len(animals))
+	}
+	dog, ok := animals[0].(*TnsDog)
+	if !ok {
+		t.Fatalf("expected first animal to be *TnsDog, got %T", animals[0])
+	}
+	if dog.Name != "Fido" || dog.BarkVolume != 7 {
+		t.Fatalf("unexpected dog: %#v", dog)
+	}
+	cat, ok := animals[1].(*TnsCat)
+	if !ok {
+		t.Fatalf("expected second animal to be *TnsCat, got %T", animals[1])
+	}
+	if cat.Name != "Mog" || cat.Lives != 9 {
+		t.Fatalf("unexpected cat: %#v", cat)
+	}
+}
+
+func TestSubstitutionGroupMarshalUsesConcreteMemberNames(t *testing.T) {
+	zoo := TnsZoo{}
+	zoo.TnsAnimal.Append(
+		&TnsDog{TnsAnimalType: &TnsAnimalType{Name: "Fido"}, BarkVolume: 7},
+		&TnsCat{TnsAnimalType: &TnsAnimalType{Name: "Mog"}, Lives: 9},
+	)
+	output, err := xml.Marshal(zoo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "<dog") || !strings.Contains(string(output), "<cat") {
+		t.Fatalf("expected dog and cat elements, got: %s", output)
+	}
+	var decoded TnsZoo
+	if err := xml.Unmarshal(output, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	animals := decoded.TnsAnimal.Values()
+	if len(animals) != 2 {
+		t.Fatalf("expected 2 round-tripped animals, got %d", len(animals))
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "substitution_group_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func TestParseGoTopLevelSimpleElementUsesElementNameDuringMarshal(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-top-level-simple-element-*")
 	require.NoError(t, err)

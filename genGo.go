@@ -13,6 +13,7 @@ import (
 	"go/format"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,25 +21,41 @@ import (
 // CodeGenerator holds code generator overrides and runtime data that are used
 // when generate code from proto tree.
 type CodeGenerator struct {
-	Lang                    string
-	File                    string
-	Field                   string
-	Package                 string
-	ImportFmt               bool // For Go language
-	ImportReflect           bool // For Go language
-	ImportRegexp            bool // For Go language
-	ImportStrconv           bool // For Go language
-	ImportTime              bool // For Go language
-	ImportEncodingXML       bool // For Go language
-	TargetNamespace         string
-	NamespacePrefix         map[string]string
-	ReferencedNames         map[string]bool
-	LocalNameNSMap          map[string]string
-	ParseFileMap            map[string][]interface{}
-	ProtoTree               []interface{}
-	StructAST               map[string]string
-	Hook                    Hook
-	ValidationHelperEmitted bool
+	Lang                           string
+	File                           string
+	Field                          string
+	Package                        string
+	ImportFmt                      bool // For Go language
+	ImportReflect                  bool // For Go language
+	ImportRegexp                   bool // For Go language
+	ImportStrconv                  bool // For Go language
+	ImportTime                     bool // For Go language
+	ImportEncodingXML              bool // For Go language
+	TargetNamespace                string
+	NamespacePrefix                map[string]string
+	ReferencedNames                map[string]bool
+	LocalNameNSMap                 map[string]string
+	ParseFileMap                   map[string][]interface{}
+	ProtoTree                      []interface{}
+	StructAST                      map[string]string
+	Hook                           Hook
+	ValidationHelperEmitted        bool
+	SubstitutionGroupHelperEmitted bool
+}
+
+type goComplexElementField struct {
+	FieldName           string
+	FieldType           string
+	Plural              bool
+	Element             Element
+	SubstitutionMembers []*Element
+}
+
+type goComplexStructField struct {
+	FieldName string
+	FieldType string
+	XMLTag    string
+	HasXMLTag bool
 }
 
 var goBuildinType = map[string]bool{
@@ -213,16 +230,21 @@ func (gen *CodeGenerator) goDeclarationName(name string, unique bool) string {
 }
 
 func (gen *CodeGenerator) goElementDeclarationName(name string) string {
-	fieldName := gen.goTypeIdentifier(gen.TargetNamespace, name)
+	fieldName := gen.goElementTypeNameFor(gen.TargetNamespace, name)
+	fieldNameCount[fieldName]++
+	if count := fieldNameCount[fieldName]; count != 1 {
+		fieldName = fmt.Sprintf("%s%d", fieldName, count)
+	}
+	return fieldName
+}
+
+func (gen *CodeGenerator) goElementTypeNameFor(namespace, name string) string {
+	fieldName := gen.goTypeIdentifier(namespace, name)
 	if fieldName == "" {
 		fieldName = genGoTypeName(name)
 	}
 	if gen.hasLocalNamedTypeConflict(fieldName, name) {
 		fieldName += "Element"
-	}
-	fieldNameCount[fieldName]++
-	if count := fieldNameCount[fieldName]; count != 1 {
-		fieldName = fmt.Sprintf("%s%d", fieldName, count)
 	}
 	return fieldName
 }
@@ -284,6 +306,113 @@ func (gen *CodeGenerator) goXMLStartNameLiteral(namespace, name string) string {
 		return fmt.Sprintf("xml.Name{Local: %q}", localName)
 	}
 	return fmt.Sprintf("xml.Name{Space: %q, Local: %q}", namespace, localName)
+}
+
+func (gen *CodeGenerator) goElementXMLNameLiteral(element *Element) string {
+	return gen.goXMLStartNameLiteral(element.Namespace, element.Name)
+}
+
+func (gen *CodeGenerator) goAllElements() []*Element {
+	elements := make([]*Element, 0)
+	for _, tree := range append([][]interface{}{gen.ProtoTree}, gen.goParsedTrees()...) {
+		for _, ele := range tree {
+			if v, ok := ele.(*Element); ok {
+				elements = append(elements, v)
+			}
+		}
+	}
+	return elements
+}
+
+func (gen *CodeGenerator) goParsedTrees() [][]interface{} {
+	paths := make([]string, 0, len(gen.ParseFileMap))
+	for path := range gen.ParseFileMap {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	values := make([][]interface{}, 0, len(paths))
+	for _, path := range paths {
+		values = append(values, gen.ParseFileMap[path])
+	}
+	return values
+}
+
+func (gen *CodeGenerator) goElementNamespace(element *Element) string {
+	if element.Namespace != "" {
+		return element.Namespace
+	}
+	if namespace := gen.goTypeNamespace(element.Name); namespace != "" {
+		return namespace
+	}
+	return gen.TargetNamespace
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupNamespace(member *Element) string {
+	if prefix := getNSPrefix(member.SubstitutionGroup); prefix != "" {
+		if namespace := gen.LocalNameNSMap[prefix]; namespace != "" {
+			return namespace
+		}
+	}
+	return gen.goElementNamespace(member)
+}
+
+func (gen *CodeGenerator) goFindElement(namespace, name string) *Element {
+	localName := trimNSPrefix(name)
+	for _, element := range gen.goAllElements() {
+		if element.Name == localName && gen.goElementNamespace(element) == namespace {
+			return element
+		}
+	}
+	return nil
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupMembers(head *Element) []*Element {
+	headName := trimNSPrefix(head.Name)
+	headNamespace := gen.goElementNamespace(head)
+	members := make([]*Element, 0)
+	seen := make(map[string]bool)
+	for _, element := range gen.goAllElements() {
+		if element.SubstitutionGroup == "" {
+			continue
+		}
+		if trimNSPrefix(element.SubstitutionGroup) != headName || gen.goSubstitutionGroupNamespace(element) != headNamespace {
+			continue
+		}
+		key := gen.goElementNamespace(element) + "\x00" + element.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		members = append(members, element)
+	}
+	sort.Slice(members, func(i, j int) bool {
+		left := gen.goElementNamespace(members[i]) + "\x00" + members[i].Name
+		right := gen.goElementNamespace(members[j]) + "\x00" + members[j].Name
+		return left < right
+	})
+	return members
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupHeads(member *Element) []*Element {
+	heads := make([]*Element, 0)
+	seen := make(map[string]bool)
+	current := member
+	for current != nil && current.SubstitutionGroup != "" {
+		headName := trimNSPrefix(current.SubstitutionGroup)
+		headNamespace := gen.goSubstitutionGroupNamespace(current)
+		key := headNamespace + "\x00" + headName
+		if seen[key] {
+			break
+		}
+		seen[key] = true
+		head := gen.goFindElement(headNamespace, headName)
+		if head == nil {
+			head = &Element{Name: headName, Namespace: headNamespace}
+		}
+		heads = append(heads, head)
+		current = head
+	}
+	return heads
 }
 
 func (gen *CodeGenerator) hasQualifiedElementReference(name string) bool {
@@ -403,8 +532,7 @@ func goRequiredPointerFieldCheck(typeName, fieldName string) string {
 	return fmt.Sprintf("\tif v.%s == nil {\n\t\treturn fmt.Errorf(%q)\n\t}", fieldName, typeName+"."+fieldName+" is required")
 }
 
-func (gen *CodeGenerator) goStructValidationMethods(typeName string, requiredChecks []string) string {
-	gen.ImportEncodingXML = true
+func (gen *CodeGenerator) goStructValidationCore(typeName string, requiredChecks []string) string {
 	gen.ImportReflect = true
 	validateBody := fmt.Sprintf("\treturn %s(reflect.ValueOf(v), false)", "validateStructFields"+typeName)
 	if len(requiredChecks) > 0 {
@@ -457,17 +585,178 @@ func %s(value reflect.Value, allowValidator bool) error {
 func (v %s) Validate() error {
 	%s
 }
+`, helperName, helperName, helperName, helperName, helperName, typeName, validateBody)
+}
 
+func (gen *CodeGenerator) goStructValidationOnlyMethods(typeName string, requiredChecks []string) string {
+	return gen.goStructValidationCore(typeName, requiredChecks)
+}
+
+func (gen *CodeGenerator) goStructValidationMethods(typeName string, requiredChecks []string, embeddedPointerFields ...string) string {
+	gen.ImportEncodingXML = true
+	decodeAliasTypes := ""
+	decodeShadowFields := ""
+	decodeInitializers := ""
+	decodeAssignments := ""
+	decodeMainAssignment := fmt.Sprintf("\t*v = %s(value)\n", typeName)
+	decodeValueType := "alias"
+	for _, fieldName := range embeddedPointerFields {
+		aliasName := fieldName + "Alias"
+		decodeAliasTypes += fmt.Sprintf("\ttype %s %s\n", aliasName, fieldName)
+		decodeShadowFields += fmt.Sprintf("\t\t*%s\n", aliasName)
+		decodeInitializers += fmt.Sprintf("\tvalue.%s = &%s{}\n", aliasName, aliasName)
+		decodeAssignments += fmt.Sprintf("\t%sValue := %s(*value.%s)\n\tv.%s = &%sValue\n", fieldName, fieldName, aliasName, fieldName, fieldName)
+	}
+	if len(embeddedPointerFields) > 0 {
+		decodeValueType = "struct {\n\t\talias\n" + decodeShadowFields + "\t}"
+		decodeMainAssignment = fmt.Sprintf("\t*v = %s(value.alias)\n", typeName)
+	}
+	return gen.goStructValidationCore(typeName, requiredChecks) + fmt.Sprintf(`
 func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	type alias %s
-	var value alias
+%s	var value %s
+%s
 	if err := d.DecodeElement(&value, &start); err != nil {
 		return err
 	}
-	*v = %s(value)
+%s%s
 	return v.Validate()
 }
-`, helperName, helperName, helperName, helperName, helperName, typeName, validateBody, typeName, typeName, typeName)
+`, typeName, typeName, decodeAliasTypes, decodeValueType, decodeInitializers, decodeMainAssignment, decodeAssignments)
+}
+
+func (gen *CodeGenerator) goSubstitutionFieldWrapper(typeName string, field goComplexElementField) string {
+	gen.ImportEncodingXML = true
+	gen.ImportFmt = true
+	headType := gen.goElementTypeNameFor(gen.goElementNamespace(&field.Element), field.Element.Name)
+	if field.Plural {
+		typeName = typeName + field.FieldName + "SubstitutionGroup"
+		content := fmt.Sprintf("type %s []%s\n", typeName, headType)
+		content += fmt.Sprintf(`
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	switch start.Name {
+`, typeName)
+		for _, member := range field.SubstitutionMembers {
+			memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+			content += fmt.Sprintf("\tcase %s:\n\t\tvar value %s\n\t\tif err := d.DecodeElement(&value, &start); err != nil {\n\t\t\treturn err\n\t\t}\n\t\t*v = append(*v, &value)\n\t\treturn nil\n", gen.goElementXMLNameLiteral(member), memberType)
+		}
+		content += fmt.Sprintf(`	default:
+		return fmt.Errorf("unsupported substitution group member %%s for %s", start.Name.Local)
+	}
+}
+
+func (v %s) Values() []%s {
+	return []%s(v)
+}
+
+func (v *%s) Append(values ...%s) {
+	*v = append(*v, values...)
+}
+
+func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	for _, item := range v {
+		if item == nil {
+			continue
+		}
+		if err := e.Encode(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+`, field.FieldName, typeName, headType, headType, typeName, headType, typeName)
+		return content
+	}
+	typeName = typeName + field.FieldName + "SubstitutionGroup"
+	content := fmt.Sprintf("type %s struct {\n\tValue %s\n}\n", typeName, headType)
+	content += fmt.Sprintf(`
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	switch start.Name {
+`, typeName)
+	for _, member := range field.SubstitutionMembers {
+		memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+		content += fmt.Sprintf("\tcase %s:\n\t\tvar value %s\n\t\tif err := d.DecodeElement(&value, &start); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tv.Value = &value\n\t\treturn nil\n", gen.goElementXMLNameLiteral(member), memberType)
+	}
+	content += fmt.Sprintf(`	default:
+		return fmt.Errorf("unsupported substitution group member %%s for %s", start.Name.Local)
+	}
+}
+
+func (v %s) Get() %s {
+	return v.Value
+}
+
+func (v *%s) Set(value %s) {
+	v.Value = value
+}
+
+func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if v.Value == nil {
+		return nil
+	}
+	return e.Encode(v.Value)
+}
+`, field.FieldName, typeName, headType, typeName, headType, typeName)
+	return content
+}
+
+func (gen *CodeGenerator) goComplexExtensionMethods(typeName string, baseType string, requiredChecks []string, fields []goComplexStructField) string {
+	gen.ImportEncodingXML = true
+	gen.ImportReflect = true
+	gen.ImportFmt = gen.ImportFmt || len(requiredChecks) > 0
+	methods := gen.goStructValidationOnlyMethods(typeName, requiredChecks)
+	baseName := strings.TrimPrefix(baseType, "*")
+	baseAlias := baseName + "Alias"
+	methods += fmt.Sprintf(`
+func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	type %s %s
+	value := struct {
+`, typeName, baseAlias, baseName)
+	for _, field := range fields {
+		if field.HasXMLTag {
+			methods += fmt.Sprintf("\t\t%s\t%s\t`xml:\"%s\"`\n", field.FieldName, field.FieldType, field.XMLTag)
+		} else {
+			methods += fmt.Sprintf("\t\t%s\t%s\n", field.FieldName, field.FieldType)
+		}
+	}
+	methods += fmt.Sprintf("\t\t*%s\n\t}{}\n", baseAlias)
+	for _, field := range fields {
+		methods += fmt.Sprintf("\tvalue.%s = v.%s\n", field.FieldName, field.FieldName)
+	}
+	methods += fmt.Sprintf(`	if v.%s != nil {
+		base := %s(*v.%s)
+		value.%s = &base
+	}
+	return e.EncodeElement(value, start)
+}
+
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	type %s %s
+	var value struct {
+`, baseName, baseAlias, baseName, baseAlias, typeName, baseAlias, baseName)
+	for _, field := range fields {
+		if field.HasXMLTag {
+			methods += fmt.Sprintf("\t\t%s\t%s\t`xml:\"%s\"`\n", field.FieldName, field.FieldType, field.XMLTag)
+		} else {
+			methods += fmt.Sprintf("\t\t%s\t%s\n", field.FieldName, field.FieldType)
+		}
+	}
+	methods += fmt.Sprintf(`		*%s
+	}
+	value.%s = &%s{}
+	if err := d.DecodeElement(&value, &start); err != nil {
+		return err
+	}
+`, baseAlias, baseAlias, baseAlias)
+	for _, field := range fields {
+		methods += fmt.Sprintf("\tv.%s = value.%s\n", field.FieldName, field.FieldName)
+	}
+	methods += fmt.Sprintf(`	base := %s(*value.%s)
+	v.%s = &base
+	return v.Validate()
+}
+`, baseName, baseAlias, baseName)
+	return methods
 }
 
 func (gen *CodeGenerator) goElementMethods(typeName, baseType string, element *Element) string {
@@ -490,6 +779,34 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	return nil
 }
 `, typeName, gen.goXMLStartNameLiteral(element.Namespace, element.Name), baseType, typeName, baseType, typeName)
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupInterface(typeName string, element *Element) string {
+	methodName := gen.goSubstitutionGroupMarkerMethod(typeName)
+	return fmt.Sprintf("type %s interface {\n\t%s()\n}\n", typeName, methodName)
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupMarkerMethod(typeName string) string {
+	return "is" + typeName
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupMemberMethods(typeName string, element *Element) string {
+	headElements := gen.goSubstitutionGroupHeads(element)
+	if len(headElements) == 0 {
+		return ""
+	}
+	var methods strings.Builder
+	seen := make(map[string]bool)
+	for _, head := range headElements {
+		headType := gen.goElementTypeNameFor(gen.goElementNamespace(head), head.Name)
+		marker := gen.goSubstitutionGroupMarkerMethod(headType)
+		if seen[marker] {
+			continue
+		}
+		seen[marker] = true
+		methods.WriteString(fmt.Sprintf("\nfunc (*%s) %s() {}\n", typeName, marker))
+	}
+	return methods.String()
 }
 
 // GoSimpleType generates code for simple type XML schema in Go language
@@ -550,6 +867,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		content := " struct {\n"
 		fieldName := gen.goDeclarationName(v.Name, true)
 		requiredChecks := make([]string, 0)
+		pointerFieldInitializers := make([]string, 0)
+		structFields := make([]goComplexStructField, 0)
+		complexExtensionBase := ""
 		if shouldAddGoXMLName(v.Name, v.Anonymous) {
 			gen.ImportEncodingXML = true
 			content += fmt.Sprintf("\tXMLName\txml.Name\t`xml:\"%s\"`\n", gen.goXMLName(v.Name, v.Namespace, v.Anonymous))
@@ -581,20 +901,41 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			if !attribute.Optional && strings.HasPrefix(fieldType, "*") {
 				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, genGoFieldName(attribute.Name, false)+"Attr"))
 			}
-			content += fmt.Sprintf("\t%sAttr\t%s\t`xml:\"%s\"`\n", genGoFieldName(attribute.Name, false), fieldType, gen.goXMLTagWithOptions(attribute.Namespace, attribute.Name, ",attr", optional))
+			attributeFieldName := genGoFieldName(attribute.Name, false) + "Attr"
+			attributeTag := gen.goXMLTagWithOptions(attribute.Namespace, attribute.Name, ",attr", optional)
+			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s\"`\n", attributeFieldName, fieldType, attributeTag)
+			structFields = append(structFields, goComplexStructField{FieldName: attributeFieldName, FieldType: fieldType, XMLTag: attributeTag, HasXMLTag: true})
 		}
 		for _, group := range v.Groups {
 			fieldType := gen.goValueFieldType(group.Ref)
 			if group.Plural {
 				fieldType = "[]" + fieldType
 			}
-			content += fmt.Sprintf("\t%s\t%s\n", genGoFieldName(group.Name, false), fieldType)
+			groupFieldName := genGoFieldName(group.Name, false)
+			content += fmt.Sprintf("\t%s\t%s\n", groupFieldName, fieldType)
+			structFields = append(structFields, goComplexStructField{FieldName: groupFieldName, FieldType: fieldType})
 		}
 
+		substitutionFields := make([]goComplexElementField, 0)
 		for _, element := range v.Elements {
+			elementFieldName := genGoFieldName(element.Name, false)
 			fieldType := gen.goValueFieldType(element.Type)
-			if helperName := gen.goEnsureInlineSimpleType(fieldName, genGoFieldName(element.Name, false), element.InlineSimpleType); helperName != "" {
+			if helperName := gen.goEnsureInlineSimpleType(fieldName, elementFieldName, element.InlineSimpleType); helperName != "" {
 				fieldType = gen.goFieldType(helperName)
+			}
+			members := gen.goSubstitutionGroupMembers(&element)
+			if len(members) > 0 {
+				fieldType = fieldName + elementFieldName + "SubstitutionGroup"
+				content += fmt.Sprintf("\t%s\t%s\t`xml:\",any\"`\n", elementFieldName, fieldType)
+				structFields = append(structFields, goComplexStructField{FieldName: elementFieldName, FieldType: fieldType, XMLTag: ",any", HasXMLTag: true})
+				substitutionFields = append(substitutionFields, goComplexElementField{
+					FieldName:           elementFieldName,
+					FieldType:           fieldType,
+					Plural:              element.Plural,
+					Element:             element,
+					SubstitutionMembers: members,
+				})
+				continue
 			}
 
 			if element.Plural {
@@ -610,9 +951,11 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 				gen.ImportTime = true
 			}
 			if !element.Optional && !element.Plural && strings.HasPrefix(fieldType, "*") {
-				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, genGoFieldName(element.Name, false)))
+				requiredChecks = append(requiredChecks, goRequiredPointerFieldCheck(fieldName, elementFieldName))
 			}
-			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s\"`\n", genGoFieldName(element.Name, false), fieldType, gen.goXMLTagWithOptions(element.Namespace, element.Name, optional))
+			elementTag := gen.goXMLTagWithOptions(element.Namespace, element.Name, optional)
+			content += fmt.Sprintf("\t%s\t%s\t`xml:\"%s\"`\n", elementFieldName, fieldType, elementTag)
+			structFields = append(structFields, goComplexStructField{FieldName: elementFieldName, FieldType: fieldType, XMLTag: elementTag, HasXMLTag: true})
 		}
 		if len(v.Base) > 0 {
 			// If the type is a built-in type, generate a Value field as chardata.
@@ -629,7 +972,12 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			} else if isGoBuiltInType(v.Base) {
 				content += fmt.Sprintf("\tValue\t%s\t`xml:\",chardata\"`\n", gen.goFieldType(v.Base))
 			} else {
-				content += fmt.Sprintf("\t%s\n", gen.goFieldType(v.Base))
+				baseFieldType := gen.goFieldType(v.Base)
+				content += fmt.Sprintf("\t%s\n", baseFieldType)
+				if strings.HasPrefix(baseFieldType, "*") {
+					pointerFieldInitializers = append(pointerFieldInitializers, strings.TrimPrefix(baseFieldType, "*"))
+				}
+				complexExtensionBase = baseFieldType
 			}
 		}
 		content += "}\n"
@@ -640,7 +988,14 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goStructValidationMethods(fieldName, requiredChecks)
+		for _, field := range substitutionFields {
+			gen.Field += gen.goSubstitutionFieldWrapper(fieldName, field)
+		}
+		if complexExtensionBase != "" {
+			gen.Field += gen.goComplexExtensionMethods(fieldName, complexExtensionBase, requiredChecks, structFields)
+		} else {
+			gen.Field += gen.goStructValidationMethods(fieldName, requiredChecks, pointerFieldInitializers...)
+		}
 	}
 }
 
@@ -1002,6 +1357,17 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 func (gen *CodeGenerator) GoElement(v *Element) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		fieldName := gen.goElementDeclarationName(v.Name)
+		if len(gen.goSubstitutionGroupMembers(v)) > 0 {
+			content := fmt.Sprintf(" interface {\n\t%s()\n}\n", gen.goSubstitutionGroupMarkerMethod(fieldName))
+			gen.StructAST[v.Name] = content
+
+			output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
+			if gen.Hook != nil {
+				gen.Hook.OnAddContent(gen, &output)
+			}
+			gen.Field += output
+			return
+		}
 		fieldType := gen.goElementBaseType(v.Type)
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
 			fieldType = helperName
@@ -1022,6 +1388,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 		}
 		gen.Field += output
 		gen.Field += gen.goElementMethods(fieldName, declaredType, v)
+		gen.Field += gen.goSubstitutionGroupMemberMethods(fieldName, v)
 	}
 }
 

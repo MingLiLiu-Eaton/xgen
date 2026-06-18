@@ -55,6 +55,9 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 		if attr.Name.Local == "substitutionGroup" {
 			e.SubstitutionGroup = opt.qualifyTypeReference(attr.Value)
 		}
+		if attr.Name.Local == "abstract" {
+			e.Abstract = attr.Value == "true" || attr.Value == "1"
+		}
 		if attr.Name.Local == "maxOccurs" {
 			var maxOccurs int
 			if maxOccurs, err = strconv.Atoi(attr.Value); attr.Value != "unbounded" && err != nil {
