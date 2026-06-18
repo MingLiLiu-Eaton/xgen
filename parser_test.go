@@ -1389,6 +1389,200 @@ func TestSubstitutionGroupMarshalUsesConcreteMemberNames(t *testing.T) {
 	require.NoError(t, err, string(output))
 }
 
+func TestParseGoNestedSubstitutionGroupPolymorphism(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-nested-substitution-group-polymorphism-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:emix="http://example.com/emix"
+	targetNamespace="http://example.com/emix"
+	elementFormDefault="qualified">
+	<xs:complexType name="ItemBaseType">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="EnergyItemType">
+		<xs:complexContent>
+			<xs:extension base="emix:ItemBaseType"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="PowerEnergyItemType">
+		<xs:complexContent>
+			<xs:extension base="emix:EnergyItemType">
+				<xs:sequence>
+					<xs:element name="watts" type="xs:int"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="itemBase" type="emix:ItemBaseType" abstract="true"/>
+	<xs:element name="energyItem" type="emix:EnergyItemType" abstract="true" substitutionGroup="emix:itemBase"/>
+	<xs:element name="powerEnergyItem" type="emix:PowerEnergyItemType" substitutionGroup="emix:energyItem"/>
+	<xs:complexType name="EnvelopeType">
+		<xs:sequence>
+			<xs:element ref="emix:itemBase" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="envelope" type="emix:EnvelopeType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "emix.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "emix.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "emix.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "case xml.Name{Space: \"http://example.com/emix\", Local: \"powerEnergyItem\"}:")
+	assert.NotContains(t, code, "var value EmixEnergyItem")
+	assert.Contains(t, code, "func (*EmixPowerEnergyItem) isEmixItemBase() {}")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestNestedSubstitutionGroupUnmarshalDispatchesToLeafMember(t *testing.T) {
+	input := []byte("<envelope xmlns=\"http://example.com/emix\"><powerEnergyItem><id>a</id><watts>42</watts></powerEnergyItem></envelope>")
+	var envelope EmixEnvelope
+	if err := xml.Unmarshal(input, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	items := envelope.EmixItemBase.Values()
+	if len(items) != 1 {
+		t.Fatalf("expected one item, got %d", len(items))
+	}
+	item, ok := items[0].(*EmixPowerEnergyItem)
+	if !ok {
+		t.Fatalf("expected *EmixPowerEnergyItem, got %T", items[0])
+	}
+	if item.Id != "a" || item.Watts != 42 {
+		t.Fatalf("unexpected item: %#v", item)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "nested_substitution_group_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func TestParseGoFlattenedBaseFieldsPreserveOwnerNamespace(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-flattened-base-namespace-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	mainSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:oadr="http://example.com/oadr"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/oadr"
+	elementFormDefault="qualified">
+	<xs:import namespace="http://example.com/ei" schemaLocation="ei.xsd"/>
+	<xs:complexType name="OptTypeType">
+		<xs:sequence>
+			<xs:element name="oadrValue" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DerivedType">
+		<xs:complexContent>
+			<xs:extension base="ei:BaseType">
+				<xs:sequence>
+					<xs:element name="derivedValue" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="derived" type="oadr:DerivedType"/>
+</xs:schema>`
+	depSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:complexType name="OptTypeType">
+		<xs:sequence>
+			<xs:element name="eiValue" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OptReasonType">
+		<xs:sequence>
+			<xs:element name="reason" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="BaseType">
+		<xs:sequence>
+			<xs:element name="optType" type="ei:OptTypeType"/>
+			<xs:element name="optReason" type="ei:OptReasonType"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "oadr.xsd"), []byte(mainSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "ei.xsd"), []byte(depSchema), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "oadr.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "oadr.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Regexp(t, `OptType\s+\*EiOptTypeType\s+`+"`"+`xml:"http://example.com/ei optType"`+"`", code)
+	assert.Regexp(t, `OptReason\s+\*EiOptReasonType\s+`+"`"+`xml:"http://example.com/ei optReason"`+"`", code)
+	assert.NotContains(t, code, "OptType *OadrOptTypeType `xml:\"http://example.com/ei optType\"`")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func TestParseGoTopLevelSimpleElementUsesElementNameDuringMarshal(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-top-level-simple-element-*")
 	require.NoError(t, err)
