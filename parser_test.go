@@ -2365,3 +2365,105 @@ func TestStructValidationRejectsNilRequiredReferencePointers(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
+
+func TestParseGoStructValidationRejectsMissingRequiredSubstitutionGroup(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-required-substitution-group-validation-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/required-substitution"
+	targetNamespace="http://example.com/required-substitution"
+	elementFormDefault="qualified">
+	<xs:element name="animal" type="tns:AnimalType" abstract="true"/>
+	<xs:element name="dog" type="tns:DogType" substitutionGroup="tns:animal"/>
+	<xs:complexType name="AnimalType">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DogType">
+		<xs:complexContent>
+			<xs:extension base="tns:AnimalType">
+				<xs:sequence>
+					<xs:element name="barkVolume" type="xs:int"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ZooType">
+		<xs:sequence>
+			<xs:element ref="tns:animal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="zoo" type="tns:ZooType"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "required-substitution-validation.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "required-substitution-validation.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "required-substitution-validation.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "if v.TnsAnimal.Value == nil {")
+	assert.Contains(t, code, "return fmt.Errorf(\"TnsZooType.TnsAnimal is required\")")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+)
+
+func TestStructValidationRejectsMissingRequiredSubstitutionGroup(t *testing.T) {
+	var zoo TnsZooType
+	err := xml.Unmarshal([]byte("<tns:zoo xmlns:tns=\"http://example.com/required-substitution\"></tns:zoo>"), &zoo)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "TnsZooType.TnsAnimal is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStructValidationAcceptsPresentRequiredSubstitutionGroup(t *testing.T) {
+	var zoo TnsZooType
+	input := []byte("<tns:zoo xmlns:tns=\"http://example.com/required-substitution\"><tns:dog><tns:name>Fido</tns:name><tns:barkVolume>7</tns:barkVolume></tns:dog></tns:zoo>")
+	if err := xml.Unmarshal(input, &zoo); err != nil {
+		t.Fatal(err)
+	}
+	if zoo.TnsAnimal.Value == nil {
+		t.Fatal("expected required substitution group value")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "required_substitution_validation_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}

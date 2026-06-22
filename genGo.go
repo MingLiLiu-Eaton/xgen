@@ -656,6 +656,10 @@ func goRequiredPointerFieldCheck(typeName, fieldName string) string {
 	return fmt.Sprintf("\tif v.%s == nil {\n\t\treturn fmt.Errorf(%q)\n\t}", fieldName, typeName+"."+fieldName+" is required")
 }
 
+func goRequiredSubstitutionFieldCheck(typeName, fieldName string) string {
+	return fmt.Sprintf("\tif v.%s.Value == nil {\n\t\treturn fmt.Errorf(%q)\n\t}", fieldName, typeName+"."+fieldName+" is required")
+}
+
 func (gen *CodeGenerator) goStructValidationCore(typeName string, requiredChecks []string) string {
 	gen.ImportReflect = true
 	validateBody := fmt.Sprintf("\treturn %s(reflect.ValueOf(v), false)", "validateStructFields"+typeName)
@@ -1111,6 +1115,9 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 					Element:             element,
 					SubstitutionMembers: members,
 				})
+				if !element.Optional && !element.Plural {
+					requiredChecks = append(requiredChecks, goRequiredSubstitutionFieldCheck(fieldName, elementFieldName))
+				}
 				continue
 			}
 
