@@ -15,11 +15,17 @@ import "encoding/xml"
 func (opt *Options) OnComplexType(ele xml.StartElement, protoTree []interface{}) (err error) {
 	if opt.ComplexType.Len() > 0 {
 		e := opt.Element.Pop().(*Element)
-		opt.ComplexType.Push(&ComplexType{
+		c := ComplexType{
 			Doc:       e.Doc,
 			Name:      e.Name,
 			Namespace: e.Namespace,
-		})
+		}
+		for _, attr := range ele.Attr {
+			if attr.Name.Local == "abstract" {
+				c.Abstract = attr.Value == "true" || attr.Value == "1"
+			}
+		}
+		opt.ComplexType.Push(&c)
 	}
 
 	if opt.ComplexType.Len() == 0 {
@@ -30,6 +36,9 @@ func (opt *Options) OnComplexType(ele xml.StartElement, protoTree []interface{})
 			if attr.Name.Local == "name" {
 				c.Name = attr.Value
 				c.Namespace = opt.TargetNamespace
+			}
+			if attr.Name.Local == "abstract" {
+				c.Abstract = attr.Value == "true" || attr.Value == "1"
 			}
 		}
 		if opt.Element.Len() > 0 {

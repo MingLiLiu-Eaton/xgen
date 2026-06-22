@@ -1471,7 +1471,7 @@ func TestParseGoNestedSubstitutionGroupPolymorphism(t *testing.T) {
 			<xs:element name="id" type="xs:string"/>
 		</xs:sequence>
 	</xs:complexType>
-	<xs:complexType name="EnergyItemType">
+	<xs:complexType name="EnergyItemType" abstract="true">
 		<xs:complexContent>
 			<xs:extension base="emix:ItemBaseType"/>
 		</xs:complexContent>
@@ -1486,7 +1486,7 @@ func TestParseGoNestedSubstitutionGroupPolymorphism(t *testing.T) {
 		</xs:complexContent>
 	</xs:complexType>
 	<xs:element name="itemBase" type="emix:ItemBaseType" abstract="true"/>
-	<xs:element name="energyItem" type="emix:EnergyItemType" abstract="true" substitutionGroup="emix:itemBase"/>
+	<xs:element name="energyItem" type="emix:EnergyItemType" substitutionGroup="emix:itemBase"/>
 	<xs:element name="powerEnergyItem" type="emix:PowerEnergyItemType" substitutionGroup="emix:energyItem"/>
 	<xs:complexType name="EnvelopeType">
 		<xs:sequence>
@@ -1518,7 +1518,8 @@ func TestParseGoNestedSubstitutionGroupPolymorphism(t *testing.T) {
 	require.NoError(t, err)
 	code := string(generated)
 	assert.Contains(t, code, "case xml.Name{Space: \"http://example.com/emix\", Local: \"powerEnergyItem\"}:")
-	assert.NotContains(t, code, "var value EmixEnergyItem")
+	assert.NotContains(t, code, "type EmixEnergyItemElement")
+	assert.NotContains(t, code, "var value EmixEnergyItemElement")
 	assert.Contains(t, code, "func (*EmixPowerEnergyItem) isEmixItemBase() {}")
 
 	goMod := "module schema\n\ngo 1.22\n"

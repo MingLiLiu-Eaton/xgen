@@ -84,6 +84,7 @@ type ComplexType struct {
 	Choice         []Choice
 	AttributeGroup []AttributeGroup
 	Mixed          bool
+	Abstract       bool
 }
 
 // Group (model group) definitions are provided primarily for reference from

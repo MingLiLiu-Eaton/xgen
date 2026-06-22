@@ -259,7 +259,7 @@ func (gen *CodeGenerator) goConcreteElementTypeNameFor(namespace, name string) s
 }
 
 func (gen *CodeGenerator) goSubstitutionMemberTypeName(element *Element) string {
-	if len(gen.goSubstitutionGroupMembers(element)) > 0 && !element.Abstract {
+	if len(gen.goSubstitutionGroupMembers(element)) > 0 && gen.goElementIsConcreteSubstitutionChoice(element) {
 		return gen.goConcreteElementTypeNameFor(gen.goElementNamespace(element), element.Name)
 	}
 	return gen.goElementTypeNameFor(gen.goElementNamespace(element), element.Name)
@@ -420,7 +420,7 @@ func (gen *CodeGenerator) goConcreteSubstitutionGroupMembers(head *Element) []*E
 				continue
 			}
 			seen[memberKey] = true
-			if !member.Abstract {
+			if gen.goElementIsConcreteSubstitutionChoice(member) {
 				concrete = append(concrete, member)
 			}
 			collect(member)
@@ -442,7 +442,7 @@ func (gen *CodeGenerator) goConcreteSubstitutionGroupChoices(head *Element) []*E
 	if actualHead == nil {
 		actualHead = head
 	}
-	if !actualHead.Abstract {
+	if gen.goElementIsConcreteSubstitutionChoice(actualHead) {
 		key := gen.goElementNamespace(actualHead) + "\x00" + actualHead.Name
 		seen[key] = true
 		choices = append(choices, actualHead)
@@ -713,6 +713,15 @@ func (gen *CodeGenerator) goElementEffectiveType(element *Element) string {
 		current = head
 	}
 	return element.Type
+}
+
+func (gen *CodeGenerator) goElementHasAbstractDeclaredType(element *Element) bool {
+	complexType := gen.goFindComplexType(gen.goElementEffectiveType(element))
+	return complexType != nil && complexType.Abstract
+}
+
+func (gen *CodeGenerator) goElementIsConcreteSubstitutionChoice(element *Element) bool {
+	return !element.Abstract && !gen.goElementHasAbstractDeclaredType(element)
 }
 
 func goRequiredPointerFieldCheck(typeName, fieldName string) string {
@@ -1635,7 +1644,7 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 				gen.Hook.OnAddContent(gen, &output)
 			}
 			gen.Field += output
-			if v.Abstract {
+			if !gen.goElementIsConcreteSubstitutionChoice(v) {
 				return
 			}
 		}
