@@ -254,6 +254,17 @@ func (gen *CodeGenerator) goElementTypeNameFor(namespace, name string) string {
 	return fieldName
 }
 
+func (gen *CodeGenerator) goConcreteElementTypeNameFor(namespace, name string) string {
+	return gen.goElementTypeNameFor(namespace, name) + "Element"
+}
+
+func (gen *CodeGenerator) goSubstitutionMemberTypeName(element *Element) string {
+	if len(gen.goSubstitutionGroupMembers(element)) > 0 && !element.Abstract {
+		return gen.goConcreteElementTypeNameFor(gen.goElementNamespace(element), element.Name)
+	}
+	return gen.goElementTypeNameFor(gen.goElementNamespace(element), element.Name)
+}
+
 func (gen *CodeGenerator) hasLocalNamedTypeConflict(goName, originalName string) bool {
 	for _, ele := range gen.ProtoTree {
 		switch v := ele.(type) {
@@ -409,10 +420,8 @@ func (gen *CodeGenerator) goConcreteSubstitutionGroupMembers(head *Element) []*E
 				continue
 			}
 			seen[memberKey] = true
-			children := gen.goSubstitutionGroupMembers(member)
-			if len(children) == 0 {
+			if !member.Abstract {
 				concrete = append(concrete, member)
-				continue
 			}
 			collect(member)
 		}
@@ -424,6 +433,34 @@ func (gen *CodeGenerator) goConcreteSubstitutionGroupMembers(head *Element) []*E
 		return left < right
 	})
 	return concrete
+}
+
+func (gen *CodeGenerator) goConcreteSubstitutionGroupChoices(head *Element) []*Element {
+	choices := make([]*Element, 0)
+	seen := make(map[string]bool)
+	actualHead := gen.goFindElement(gen.goElementNamespace(head), head.Name)
+	if actualHead == nil {
+		actualHead = head
+	}
+	if !actualHead.Abstract {
+		key := gen.goElementNamespace(actualHead) + "\x00" + actualHead.Name
+		seen[key] = true
+		choices = append(choices, actualHead)
+	}
+	for _, member := range gen.goConcreteSubstitutionGroupMembers(head) {
+		key := gen.goElementNamespace(member) + "\x00" + member.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		choices = append(choices, member)
+	}
+	sort.Slice(choices, func(i, j int) bool {
+		left := gen.goElementNamespace(choices[i]) + "\x00" + choices[i].Name
+		right := gen.goElementNamespace(choices[j]) + "\x00" + choices[j].Name
+		return left < right
+	})
+	return choices
 }
 
 func (gen *CodeGenerator) goSubstitutionGroupHeads(member *Element) []*Element {
@@ -652,6 +689,32 @@ func (gen *CodeGenerator) goElementBaseType(name string) string {
 	return gen.goReferenceType(name)
 }
 
+func (gen *CodeGenerator) goElementEffectiveType(element *Element) string {
+	if element.Type != "" && element.Type != element.Name && element.Type != trimNSPrefix(element.Name) {
+		return element.Type
+	}
+	seen := make(map[string]bool)
+	current := element
+	for current != nil && current.SubstitutionGroup != "" {
+		headName := trimNSPrefix(current.SubstitutionGroup)
+		headNamespace := gen.goSubstitutionGroupNamespace(current)
+		key := headNamespace + "\x00" + headName
+		if seen[key] {
+			break
+		}
+		seen[key] = true
+		head := gen.goFindElement(headNamespace, headName)
+		if head == nil {
+			break
+		}
+		if head.Type != "" && head.Type != head.Name && head.Type != trimNSPrefix(head.Name) {
+			return head.Type
+		}
+		current = head
+	}
+	return element.Type
+}
+
 func goRequiredPointerFieldCheck(typeName, fieldName string) string {
 	return fmt.Sprintf("\tif v.%s == nil {\n\t\treturn fmt.Errorf(%q)\n\t}", fieldName, typeName+"."+fieldName+" is required")
 }
@@ -760,7 +823,7 @@ func (gen *CodeGenerator) goSubstitutionFieldWrapper(typeName string, field goCo
 	markerName := "is" + headType
 	content := fmt.Sprintf("type %s interface {\n\t%s()\n}\n", headType, markerName)
 	for _, member := range field.SubstitutionMembers {
-		memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+		memberType := gen.goSubstitutionMemberTypeName(member)
 		content += fmt.Sprintf("\nfunc (*%s) %s() {}\n", memberType, markerName)
 	}
 	if field.Plural {
@@ -771,7 +834,7 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	switch start.Name {
 `, typeName)
 		for _, member := range field.SubstitutionMembers {
-			memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+			memberType := gen.goSubstitutionMemberTypeName(member)
 			content += fmt.Sprintf("\tcase %s:\n\t\tvar value %s\n\t\tif err := d.DecodeElement(&value, &start); err != nil {\n\t\t\treturn err\n\t\t}\n\t\t*v = append(*v, &value)\n\t\treturn nil\n", gen.goElementXMLNameLiteral(member), memberType)
 		}
 		content += fmt.Sprintf(`	default:
@@ -808,7 +871,7 @@ func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	switch start.Name {
 `, typeName)
 	for _, member := range field.SubstitutionMembers {
-		memberType := gen.goElementTypeNameFor(gen.goElementNamespace(member), member.Name)
+		memberType := gen.goSubstitutionMemberTypeName(member)
 		content += fmt.Sprintf("\tcase %s:\n\t\tvar value %s\n\t\tif err := d.DecodeElement(&value, &start); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tv.Value = &value\n\t\treturn nil\n", gen.goElementXMLNameLiteral(member), memberType)
 	}
 	content += fmt.Sprintf(`	default:
@@ -962,8 +1025,24 @@ func (gen *CodeGenerator) goTypeHasValidate(name string) bool {
 }
 
 func (gen *CodeGenerator) goSubstitutionGroupInterface(typeName string, element *Element) string {
-	methodName := gen.goSubstitutionGroupMarkerMethod(typeName)
-	return fmt.Sprintf("type %s interface {\n\t%s()\n}\n", typeName, methodName)
+	methods := []string{gen.goSubstitutionGroupMarkerMethod(typeName)}
+	seen := map[string]bool{methods[0]: true}
+	for _, head := range gen.goSubstitutionGroupHeads(element) {
+		headType := gen.goElementTypeNameFor(gen.goElementNamespace(head), head.Name)
+		methodName := gen.goSubstitutionGroupMarkerMethod(headType)
+		if seen[methodName] {
+			continue
+		}
+		seen[methodName] = true
+		methods = append(methods, methodName)
+	}
+	var content strings.Builder
+	content.WriteString(fmt.Sprintf("type %s interface {\n", typeName))
+	for _, methodName := range methods {
+		content.WriteString(fmt.Sprintf("\t%s()\n", methodName))
+	}
+	content.WriteString("}\n")
+	return content.String()
 }
 
 func (gen *CodeGenerator) goSubstitutionGroupMarkerMethod(typeName string) string {
@@ -987,6 +1066,12 @@ func (gen *CodeGenerator) goSubstitutionGroupMemberMethods(typeName string, elem
 		methods.WriteString(fmt.Sprintf("\nfunc (*%s) %s() {}\n", typeName, marker))
 	}
 	return methods.String()
+}
+
+func (gen *CodeGenerator) goSubstitutionGroupConcreteHeadMethods(typeName, headType string, element *Element) string {
+	methods := fmt.Sprintf("\nfunc (*%s) %s() {}\n", typeName, gen.goSubstitutionGroupMarkerMethod(headType))
+	methods += gen.goSubstitutionGroupMemberMethods(typeName, element)
+	return methods
 }
 
 // GoSimpleType generates code for simple type XML schema in Go language
@@ -1113,7 +1198,7 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 					FieldType:           fieldType,
 					Plural:              element.Plural,
 					Element:             element,
-					SubstitutionMembers: members,
+					SubstitutionMembers: gen.goConcreteSubstitutionGroupChoices(&element),
 				})
 				if !element.Optional && !element.Plural {
 					requiredChecks = append(requiredChecks, goRequiredSubstitutionFieldCheck(fieldName, elementFieldName))
@@ -1540,8 +1625,9 @@ func (gen *CodeGenerator) GoAttributeGroup(v *AttributeGroup) {
 func (gen *CodeGenerator) GoElement(v *Element) {
 	if _, ok := gen.StructAST[v.Name]; !ok {
 		fieldName := gen.goElementDeclarationName(v.Name)
-		if len(gen.goSubstitutionGroupMembers(v)) > 0 {
-			content := fmt.Sprintf(" interface {\n\t%s()\n}\n", gen.goSubstitutionGroupMarkerMethod(fieldName))
+		substitutionMembers := gen.goSubstitutionGroupMembers(v)
+		if len(substitutionMembers) > 0 {
+			content := strings.TrimPrefix(gen.goSubstitutionGroupInterface(fieldName, v), "type "+fieldName)
 			gen.StructAST[v.Name] = content
 
 			output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
@@ -1549,13 +1635,19 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 				gen.Hook.OnAddContent(gen, &output)
 			}
 			gen.Field += output
-			return
+			if v.Abstract {
+				return
+			}
 		}
-		fieldType := gen.goElementBaseType(v.Type)
+		concreteName := fieldName
+		if len(substitutionMembers) > 0 {
+			concreteName = gen.goConcreteElementTypeNameFor(gen.goElementNamespace(v), v.Name)
+		}
+		fieldType := gen.goElementBaseType(gen.goElementEffectiveType(v))
 		if helperName := gen.goEnsureInlineSimpleType(fieldName, "Value", v.InlineSimpleType); helperName != "" {
 			fieldType = helperName
 		}
-		if v.InlineSimpleType == nil && v.SubstitutionGroup == "" && fieldType == fieldName && !gen.goHasNamedType(v.Type) {
+		if v.InlineSimpleType == nil && v.SubstitutionGroup == "" && fieldType == fieldName && !gen.goHasNamedType(gen.goElementEffectiveType(v)) {
 			fieldType, _ = getBuildInTypeByLang("anyType", "Go")
 		}
 		declaredType := fieldType
@@ -1563,15 +1655,21 @@ func (gen *CodeGenerator) GoElement(v *Element) {
 			declaredType = "[]" + declaredType
 		}
 		content := fmt.Sprintf(" %s\n", declaredType)
-		gen.StructAST[v.Name] = content
+		if len(substitutionMembers) == 0 {
+			gen.StructAST[v.Name] = content
+		}
 
-		output := fmt.Sprintf("%stype %s%s", genFieldComment(fieldName, v.Doc, "//"), fieldName, gen.StructAST[v.Name])
+		output := fmt.Sprintf("%stype %s%s", genFieldComment(concreteName, v.Doc, "//"), concreteName, content)
 		if gen.Hook != nil {
 			gen.Hook.OnAddContent(gen, &output)
 		}
 		gen.Field += output
-		gen.Field += gen.goElementMethods(fieldName, declaredType, v)
-		gen.Field += gen.goSubstitutionGroupMemberMethods(fieldName, v)
+		gen.Field += gen.goElementMethods(concreteName, declaredType, v)
+		if len(substitutionMembers) > 0 {
+			gen.Field += gen.goSubstitutionGroupConcreteHeadMethods(concreteName, fieldName, v)
+		} else {
+			gen.Field += gen.goSubstitutionGroupMemberMethods(concreteName, v)
+		}
 	}
 }
 

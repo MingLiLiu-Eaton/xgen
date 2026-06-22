@@ -1206,6 +1206,12 @@ func TestParseGoResolvesImportedSubstitutionGroupTypes(t *testing.T) {
 	<xs:simpleType name="UidType">
 		<xs:restriction base="xs:string"/>
 	</xs:simpleType>
+	<xs:complexType name="ContainerType">
+		<xs:sequence>
+			<xs:element ref="ei:uid" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="container" type="ei:ContainerType"/>
 </xs:schema>`
 
 	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "main.xsd"), []byte(mainSchema), 0o644))
@@ -1239,9 +1245,66 @@ func TestParseGoResolvesImportedSubstitutionGroupTypes(t *testing.T) {
 	require.NoError(t, err)
 	depCode := string(depGenerated)
 	assert.Contains(t, depCode, "type EiRegistrationID string")
+	assert.Contains(t, depCode, "type EiUid interface {\n\tisEiUid()\n}")
+	assert.Contains(t, depCode, "type EiRefID interface {\n\tisEiRefID()\n\tisEiUid()\n}")
+	assert.Contains(t, depCode, "type EiRefIDElement string")
+	assert.Contains(t, depCode, "func (*EiRefIDElement) isEiRefID() {}")
+	assert.Contains(t, depCode, "func (*EiRefIDElement) isEiUid() {}")
+	assert.Contains(t, depCode, "func (*EiRegistrationID) isEiRefID() {}")
+	assert.Contains(t, depCode, "func (*EiRegistrationID) isEiUid() {}")
+	assert.Contains(t, depCode, "case xml.Name{Space: \"http://example.com/ei\", Local: \"refID\"}:")
+	assert.Contains(t, depCode, "case xml.Name{Space: \"http://example.com/ei\", Local: \"registrationID\"}:")
+	assert.NotContains(t, depCode, "func (v EiUid) MarshalXML")
 
 	goMod := "module schema\n\ngo 1.22\n"
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+)
+
+var _ EiUid = (*EiRefIDElement)(nil)
+var _ EiRefID = (*EiRefIDElement)(nil)
+var _ EiUid = (*EiRegistrationID)(nil)
+var _ EiRefID = (*EiRegistrationID)(nil)
+
+func TestSubstitutionGroupIntermediateHeadIsConcreteChoice(t *testing.T) {
+	var refContainer EiContainer
+	if err := xml.Unmarshal([]byte("<container xmlns=\"http://example.com/ei\"><refID>r1</refID></container>"), &refContainer); err != nil {
+		t.Fatal(err)
+	}
+	refID, ok := refContainer.EiUid.Get().(*EiRefIDElement)
+	if !ok {
+		t.Fatalf("expected *EiRefIDElement, got %T", refContainer.EiUid.Get())
+	}
+	if *refID != EiRefIDElement("r1") {
+		t.Fatalf("unexpected refID: %q", *refID)
+	}
+	output, err := xml.Marshal(refContainer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "<refID") || !strings.Contains(string(output), ">r1</refID>") {
+		t.Fatalf("expected refID element, got %s", output)
+	}
+
+	var registrationContainer EiContainer
+	if err := xml.Unmarshal([]byte("<container xmlns=\"http://example.com/ei\"><registrationID>reg1</registrationID></container>"), &registrationContainer); err != nil {
+		t.Fatal(err)
+	}
+	registrationID, ok := registrationContainer.EiUid.Get().(*EiRegistrationID)
+	if !ok {
+		t.Fatalf("expected *EiRegistrationID, got %T", registrationContainer.EiUid.Get())
+	}
+	if *registrationID != EiRegistrationID("reg1") {
+		t.Fatalf("unexpected registrationID: %q", *registrationID)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "substitution_group_intermediate_runtime_test.go"), []byte(runtimeTest), 0o644))
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = outputDir
 	output, err := cmd.CombinedOutput()
