@@ -54,6 +54,10 @@ func (opt *Options) OnElement(ele xml.StartElement, protoTree []interface{}) (er
 		}
 		if attr.Name.Local == "substitutionGroup" {
 			e.SubstitutionGroup = opt.qualifyTypeReference(attr.Value)
+			e.SubstitutionGroupNamespace = opt.parseNS(attr.Value)
+			if e.SubstitutionGroupNamespace == "" {
+				e.SubstitutionGroupNamespace = opt.TargetNamespace
+			}
 		}
 		if attr.Name.Local == "abstract" {
 			e.Abstract = attr.Value == "true" || attr.Value == "1"

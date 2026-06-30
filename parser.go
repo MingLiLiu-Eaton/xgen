@@ -40,6 +40,7 @@ type Options struct {
 	NSSchemaLocationMap    map[string]string
 	ParseFileList          map[string]bool
 	ParseFileMap           map[string][]interface{}
+	SubstitutionElements   []*Element
 	ProtoTree              []interface{}
 	RemoteSchema           map[string][]byte
 	Hook                   Hook
@@ -206,17 +207,18 @@ func (opt *Options) Parse() (err error) {
 			os.Exit(1)
 		}
 		generator := &CodeGenerator{
-			Lang:            opt.Lang,
-			Package:         packageName,
-			TargetNamespace: opt.TargetNamespace,
-			NamespacePrefix: cloneStringMap(opt.NamespacePrefixMap),
-			ReferencedNames: cloneBoolMap(opt.ReferencedElements),
-			LocalNameNSMap:  cloneStringMap(opt.LocalNameNSMap),
-			File:            path,
-			ParseFileMap:    opt.ParseFileMap,
-			ProtoTree:       opt.ProtoTree,
-			StructAST:       map[string]string{},
-			Hook:            opt.Hook,
+			Lang:                 opt.Lang,
+			Package:              packageName,
+			TargetNamespace:      opt.TargetNamespace,
+			NamespacePrefix:      cloneStringMap(opt.NamespacePrefixMap),
+			ReferencedNames:      cloneBoolMap(opt.ReferencedElements),
+			LocalNameNSMap:       cloneStringMap(opt.LocalNameNSMap),
+			File:                 path,
+			ParseFileMap:         opt.ParseFileMap,
+			SubstitutionElements: opt.SubstitutionElements,
+			ProtoTree:            opt.ProtoTree,
+			StructAST:            map[string]string{},
+			Hook:                 opt.Hook,
 		}
 		funcName := fmt.Sprintf("Gen%s", MakeFirstUpperCase(opt.Lang))
 		if err = callFuncByName(generator, funcName, []reflect.Value{}); err != nil {
@@ -235,33 +237,76 @@ func (opt *Options) parseDirectory() error {
 	if inputDir == "" {
 		inputDir = opt.FilePath
 	}
+	xsdFiles := make([]string, 0, len(files))
 	for _, file := range files {
-		if filepath.Ext(file) != ".xsd" {
-			continue
+		if filepath.Ext(file) == ".xsd" {
+			xsdFiles = append(xsdFiles, file)
 		}
+	}
+	substitutionElements := opt.SubstitutionElements
+	if opt.Lang == "Go" {
+		// Go substitution dispatch needs members declared by schemas that import
+		// the schema currently being generated, so collect those members first.
+		for _, file := range xsdFiles {
+			parser := NewParser(&Options{
+				FilePath:            file,
+				InputDir:            inputDir,
+				OutputDir:           opt.OutputDir,
+				Extract:             true,
+				Lang:                opt.Lang,
+				Package:             opt.Package,
+				NamespacePrefixMap:  opt.NamespacePrefixMap,
+				ReferencedElements:  opt.ReferencedElements,
+				IncludeMap:          make(map[string]bool),
+				LocalNameNSMap:      make(map[string]string),
+				NSSchemaLocationMap: make(map[string]string),
+				ParseFileList:       make(map[string]bool),
+				ParseFileMap:        make(map[string][]interface{}),
+				ProtoTree:           make([]interface{}, 0),
+				RemoteSchema:        opt.RemoteSchema,
+				Hook:                opt.Hook,
+			})
+			if err := parser.Parse(); err != nil {
+				return err
+			}
+			substitutionElements = append(substitutionElements, substitutionElementsFromProtoTree(parser.ProtoTree)...)
+		}
+	}
+	for _, file := range xsdFiles {
 		parser := NewParser(&Options{
-			FilePath:            file,
-			InputDir:            inputDir,
-			OutputDir:           opt.OutputDir,
-			Extract:             opt.Extract,
-			Lang:                opt.Lang,
-			Package:             opt.Package,
-			NamespacePrefixMap:  opt.NamespacePrefixMap,
-			ReferencedElements:  opt.ReferencedElements,
-			IncludeMap:          make(map[string]bool),
-			LocalNameNSMap:      make(map[string]string),
-			NSSchemaLocationMap: make(map[string]string),
-			ParseFileList:       make(map[string]bool),
-			ParseFileMap:        make(map[string][]interface{}),
-			ProtoTree:           make([]interface{}, 0),
-			RemoteSchema:        opt.RemoteSchema,
-			Hook:                opt.Hook,
+			FilePath:             file,
+			InputDir:             inputDir,
+			OutputDir:            opt.OutputDir,
+			Extract:              opt.Extract,
+			Lang:                 opt.Lang,
+			Package:              opt.Package,
+			NamespacePrefixMap:   opt.NamespacePrefixMap,
+			ReferencedElements:   opt.ReferencedElements,
+			IncludeMap:           make(map[string]bool),
+			LocalNameNSMap:       make(map[string]string),
+			NSSchemaLocationMap:  make(map[string]string),
+			ParseFileList:        make(map[string]bool),
+			ParseFileMap:         make(map[string][]interface{}),
+			SubstitutionElements: substitutionElements,
+			ProtoTree:            make([]interface{}, 0),
+			RemoteSchema:         opt.RemoteSchema,
+			Hook:                 opt.Hook,
 		})
 		if err := parser.Parse(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func substitutionElementsFromProtoTree(protoTree []interface{}) []*Element {
+	elements := make([]*Element, 0)
+	for _, node := range protoTree {
+		if element, ok := node.(*Element); ok && element.SubstitutionGroup != "" {
+			elements = append(elements, element)
+		}
+	}
+	return elements
 }
 
 func (opt *Options) qualifyTypeReference(value string) string {
@@ -349,22 +394,23 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		valueType = ""
 		for include := range opt.IncludeMap {
 			parser := NewParser(&Options{
-				FilePath:            filepath.Join(opt.FileDir, include),
-				InputDir:            opt.InputDir,
-				OutputDir:           opt.OutputDir,
-				Extract:             true,
-				Package:             opt.Package,
-				Lang:                opt.Lang,
-				IncludeMap:          cloneBoolMap(opt.IncludeMap),
-				LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
-				NamespacePrefixMap:  opt.NamespacePrefixMap,
-				ReferencedElements:  opt.ReferencedElements,
-				NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
-				ParseFileList:       opt.ParseFileList,
-				ParseFileMap:        opt.ParseFileMap,
-				ProtoTree:           make([]interface{}, 0),
-				RemoteSchema:        opt.RemoteSchema,
-				Hook:                opt.Hook,
+				FilePath:             filepath.Join(opt.FileDir, include),
+				InputDir:             opt.InputDir,
+				OutputDir:            opt.OutputDir,
+				Extract:              true,
+				Package:              opt.Package,
+				Lang:                 opt.Lang,
+				IncludeMap:           cloneBoolMap(opt.IncludeMap),
+				LocalNameNSMap:       cloneStringMap(opt.LocalNameNSMap),
+				NamespacePrefixMap:   opt.NamespacePrefixMap,
+				ReferencedElements:   opt.ReferencedElements,
+				NSSchemaLocationMap:  cloneStringMap(opt.NSSchemaLocationMap),
+				ParseFileList:        opt.ParseFileList,
+				ParseFileMap:         opt.ParseFileMap,
+				SubstitutionElements: opt.SubstitutionElements,
+				ProtoTree:            make([]interface{}, 0),
+				RemoteSchema:         opt.RemoteSchema,
+				Hook:                 opt.Hook,
 			})
 			if parser.Parse() != nil {
 				return
@@ -384,23 +430,24 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 	depXSDSchema, ok := opt.ParseFileMap[xsdFile]
 	if !ok {
 		parser := NewParser(&Options{
-			FilePath:            xsdFile,
-			InputDir:            opt.InputDir,
-			OutputDir:           opt.OutputDir,
-			Extract:             false,
-			Dependency:          true,
-			Package:             opt.Package,
-			Lang:                opt.Lang,
-			IncludeMap:          cloneBoolMap(opt.IncludeMap),
-			LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
-			NamespacePrefixMap:  opt.NamespacePrefixMap,
-			ReferencedElements:  opt.ReferencedElements,
-			NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
-			ParseFileList:       opt.ParseFileList,
-			ParseFileMap:        opt.ParseFileMap,
-			ProtoTree:           make([]interface{}, 0),
-			RemoteSchema:        opt.RemoteSchema,
-			Hook:                opt.Hook,
+			FilePath:             xsdFile,
+			InputDir:             opt.InputDir,
+			OutputDir:            opt.OutputDir,
+			Extract:              false,
+			Dependency:           true,
+			Package:              opt.Package,
+			Lang:                 opt.Lang,
+			IncludeMap:           cloneBoolMap(opt.IncludeMap),
+			LocalNameNSMap:       cloneStringMap(opt.LocalNameNSMap),
+			NamespacePrefixMap:   opt.NamespacePrefixMap,
+			ReferencedElements:   opt.ReferencedElements,
+			NSSchemaLocationMap:  cloneStringMap(opt.NSSchemaLocationMap),
+			ParseFileList:        opt.ParseFileList,
+			ParseFileMap:         opt.ParseFileMap,
+			SubstitutionElements: opt.SubstitutionElements,
+			ProtoTree:            make([]interface{}, 0),
+			RemoteSchema:         opt.RemoteSchema,
+			Hook:                 opt.Hook,
 		})
 		if parser.Parse() != nil {
 			return
@@ -416,22 +463,23 @@ func (opt *Options) GetValueType(value string, XSDSchema []interface{}) (valueTy
 		return
 	}
 	parser := NewParser(&Options{
-		FilePath:            xsdFile,
-		InputDir:            opt.InputDir,
-		OutputDir:           opt.OutputDir,
-		Extract:             true,
-		Package:             opt.Package,
-		Lang:                opt.Lang,
-		IncludeMap:          cloneBoolMap(opt.IncludeMap),
-		LocalNameNSMap:      cloneStringMap(opt.LocalNameNSMap),
-		NamespacePrefixMap:  opt.NamespacePrefixMap,
-		ReferencedElements:  opt.ReferencedElements,
-		NSSchemaLocationMap: cloneStringMap(opt.NSSchemaLocationMap),
-		ParseFileList:       opt.ParseFileList,
-		ParseFileMap:        opt.ParseFileMap,
-		ProtoTree:           make([]interface{}, 0),
-		RemoteSchema:        opt.RemoteSchema,
-		Hook:                opt.Hook,
+		FilePath:             xsdFile,
+		InputDir:             opt.InputDir,
+		OutputDir:            opt.OutputDir,
+		Extract:              true,
+		Package:              opt.Package,
+		Lang:                 opt.Lang,
+		IncludeMap:           cloneBoolMap(opt.IncludeMap),
+		LocalNameNSMap:       cloneStringMap(opt.LocalNameNSMap),
+		NamespacePrefixMap:   opt.NamespacePrefixMap,
+		ReferencedElements:   opt.ReferencedElements,
+		NSSchemaLocationMap:  cloneStringMap(opt.NSSchemaLocationMap),
+		ParseFileList:        opt.ParseFileList,
+		ParseFileMap:         opt.ParseFileMap,
+		SubstitutionElements: opt.SubstitutionElements,
+		ProtoTree:            make([]interface{}, 0),
+		RemoteSchema:         opt.RemoteSchema,
+		Hook:                 opt.Hook,
 	})
 	if parser.Parse() != nil {
 		return

@@ -1754,6 +1754,118 @@ func TestImportedConcreteHeadWrapperUsesLocalInterface(t *testing.T) {
 	require.NoError(t, err, string(output))
 }
 
+func TestParseGoDirectoryResolvesReverseImportedSubstitutionGroupMembers(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-reverse-imported-substitution-group-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	streamSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:strm="http://example.com/stream"
+	targetNamespace="http://example.com/stream"
+	elementFormDefault="qualified">
+	<xs:complexType name="StreamPayloadBaseType" abstract="true"/>
+	<xs:element name="streamPayloadBase" type="strm:StreamPayloadBaseType" abstract="true"/>
+	</xs:schema>`
+	eiSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:ei="http://example.com/ei"
+	xmlns:strm="http://example.com/stream"
+	targetNamespace="http://example.com/ei"
+	elementFormDefault="qualified">
+	<xs:import namespace="http://example.com/stream" schemaLocation="stream.xsd"/>
+	<xs:complexType name="IntervalType">
+		<xs:sequence>
+			<xs:element ref="strm:streamPayloadBase" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="interval" type="ei:IntervalType"/>
+</xs:schema>`
+	oadrSchema := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:oadr="http://example.com/oadr"
+	xmlns:strm="http://example.com/stream"
+	targetNamespace="http://example.com/oadr"
+	elementFormDefault="qualified">
+	<xs:import namespace="http://example.com/stream" schemaLocation="stream.xsd"/>
+	<xs:complexType name="ReportPayloadType">
+		<xs:complexContent>
+			<xs:extension base="strm:StreamPayloadBaseType">
+				<xs:sequence>
+					<xs:element name="rID" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="reportPayload" type="oadr:ReportPayloadType" substitutionGroup="strm:streamPayloadBase"/>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "stream.xsd"), []byte(streamSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "ei.xsd"), []byte(eiSchema), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "oadr.xsd"), []byte(oadrSchema), 0o644))
+
+	parser := NewParser(&Options{
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	eiGenerated, err := os.ReadFile(filepath.Join(outputDir, "ei.xsd.go"))
+	require.NoError(t, err)
+	eiCode := string(eiGenerated)
+	assert.Contains(t, eiCode, "func (*OadrReportPayload) isEiIntervalTypeStrmStreamPayloadBaseSubstitutionGroupMember() {}")
+	assert.Contains(t, eiCode, "case xml.Name{Space: \"http://example.com/oadr\", Local: \"reportPayload\"}:")
+	assert.Contains(t, eiCode, "var value OadrReportPayload")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"testing"
+)
+
+func TestReverseImportedSubstitutionGroupMemberUnmarshals(t *testing.T) {
+	input := []byte("<interval xmlns=\"http://example.com/ei\" xmlns:oadr=\"http://example.com/oadr\"><oadr:reportPayload><oadr:rID>rid-1</oadr:rID></oadr:reportPayload></interval>")
+	var interval EiInterval
+	if err := xml.Unmarshal(input, &interval); err != nil {
+		t.Fatal(err)
+	}
+	members := interval.StrmStreamPayloadBase.Values()
+	if len(members) != 1 {
+		t.Fatalf("expected one stream payload, got %d", len(members))
+	}
+	payload, ok := members[0].(*OadrReportPayload)
+	if !ok {
+		t.Fatalf("expected *OadrReportPayload, got %T", members[0])
+	}
+	if payload.RID != "rid-1" {
+		t.Fatalf("unexpected rID: %q", payload.RID)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "reverse_imported_substitution_group_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func TestParseGoTopLevelListElementDoesNotForwardValidate(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-list-element-validate-*")
 	require.NoError(t, err)

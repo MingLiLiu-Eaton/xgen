@@ -36,6 +36,7 @@ type CodeGenerator struct {
 	ReferencedNames                map[string]bool
 	LocalNameNSMap                 map[string]string
 	ParseFileMap                   map[string][]interface{}
+	SubstitutionElements           []*Element
 	ProtoTree                      []interface{}
 	StructAST                      map[string]string
 	Hook                           Hook
@@ -337,6 +338,7 @@ func (gen *CodeGenerator) goAllElements() []*Element {
 			}
 		}
 	}
+	elements = append(elements, gen.SubstitutionElements...)
 	return elements
 }
 
@@ -364,6 +366,9 @@ func (gen *CodeGenerator) goElementNamespace(element *Element) string {
 }
 
 func (gen *CodeGenerator) goSubstitutionGroupNamespace(member *Element) string {
+	if member.SubstitutionGroupNamespace != "" {
+		return member.SubstitutionGroupNamespace
+	}
 	if prefix := getNSPrefix(member.SubstitutionGroup); prefix != "" {
 		if namespace := gen.LocalNameNSMap[prefix]; namespace != "" {
 			return namespace
