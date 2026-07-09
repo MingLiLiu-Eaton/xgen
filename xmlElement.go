@@ -157,7 +157,7 @@ func (opt *Options) EndElement(ele xml.EndElement, protoTree []interface{}) (err
 
 func findElement(element *Element, elements []Element) (existing *Element, index int) {
 	for i, ele := range elements {
-		if element.Name == ele.Name {
+		if element.Name == ele.Name && element.Wildcard == ele.Wildcard {
 			return &ele, i
 		}
 	}

@@ -581,6 +581,65 @@ func (gen *CodeGenerator) goFieldTypeInNamespace(name, namespace string) string 
 	return "interface{}"
 }
 
+func (gen *CodeGenerator) goWildcardTypeName() string {
+	prefix := gen.goNamespacePrefix(gen.TargetNamespace)
+	if prefix == "" {
+		return "AnyXML"
+	}
+	return prefix + "Any"
+}
+
+func (gen *CodeGenerator) goEnsureWildcardType() string {
+	typeName := gen.goWildcardTypeName()
+	if _, ok := gen.StructAST[typeName]; ok {
+		return typeName
+	}
+	gen.ImportEncodingXML = true
+	content := fmt.Sprintf(` struct {
+	XMLName  xml.Name
+	Attr     []xml.Attr  `+"`"+`xml:",any,attr"`+"`"+`
+	InnerXML string      `+"`"+`xml:",innerxml"`+"`"+`
+	Value    interface{} `+"`"+`xml:"-"`+"`"+`
+}
+
+func (v %s) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if v.Value != nil {
+		return e.Encode(v.Value)
+	}
+	if v.XMLName.Local == "" {
+		return nil
+	}
+	start.Name = v.XMLName
+	start.Attr = append(start.Attr, v.Attr...)
+	value := struct {
+		InnerXML string `+"`"+`xml:",innerxml"`+"`"+`
+	}{InnerXML: v.InnerXML}
+	return e.EncodeElement(value, start)
+}
+
+func (v *%s) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	value := struct {
+		Attr     []xml.Attr `+"`"+`xml:",any,attr"`+"`"+`
+		InnerXML string     `+"`"+`xml:",innerxml"`+"`"+`
+	}{}
+	if err := d.DecodeElement(&value, &start); err != nil {
+		return err
+	}
+	v.XMLName = start.Name
+	v.Attr = value.Attr
+	v.InnerXML = value.InnerXML
+	return nil
+}
+`, typeName, typeName)
+	gen.StructAST[typeName] = content
+	output := fmt.Sprintf("%stype %s%s", genFieldComment(typeName, "", "//"), typeName, content)
+	if gen.Hook != nil {
+		gen.Hook.OnAddContent(gen, &output)
+	}
+	gen.Field += output
+	return typeName
+}
+
 func (gen *CodeGenerator) goSimpleContentFieldType(name string) string {
 	if simpleType := gen.goFindSimpleType(name); gen.goSimpleTypeHasValidation(simpleType) {
 		return gen.goReferenceType(name)
@@ -634,6 +693,21 @@ func (gen *CodeGenerator) goComplexTypeOwnFields(v *ComplexType, typeName string
 	}
 	for _, element := range v.Elements {
 		fieldName := genGoFieldName(element.Name, false)
+		if element.Wildcard {
+			fieldType := gen.goEnsureWildcardType()
+			if element.Plural {
+				fieldType = "[]" + fieldType
+			} else if element.Optional {
+				fieldType = "*" + fieldType
+			}
+			fields = append(fields, goComplexStructField{
+				FieldName: fieldName,
+				FieldType: fieldType,
+				XMLTag:    ",any",
+				HasXMLTag: true,
+			})
+			continue
+		}
 		fieldType := gen.goValueFieldTypeInNamespace(element.Type, namespace)
 		if helperName := gen.goEnsureInlineSimpleType(typeName, fieldName, element.InlineSimpleType); helperName != "" {
 			fieldType = gen.goFieldType(helperName)
@@ -1198,6 +1272,17 @@ func (gen *CodeGenerator) GoComplexType(v *ComplexType) {
 		substitutionFields := make([]goComplexElementField, 0)
 		for _, element := range v.Elements {
 			elementFieldName := genGoFieldName(element.Name, false)
+			if element.Wildcard {
+				fieldType := gen.goEnsureWildcardType()
+				if element.Plural {
+					fieldType = "[]" + fieldType
+				} else if element.Optional {
+					fieldType = "*" + fieldType
+				}
+				content += fmt.Sprintf("\t%s\t%s\t`xml:\",any\"`\n", elementFieldName, fieldType)
+				structFields = append(structFields, goComplexStructField{FieldName: elementFieldName, FieldType: fieldType, XMLTag: ",any", HasXMLTag: true})
+				continue
+			}
 			fieldType := gen.goValueFieldType(element.Type)
 			if helperName := gen.goEnsureInlineSimpleType(fieldName, elementFieldName, element.InlineSimpleType); helperName != "" {
 				fieldType = gen.goFieldType(helperName)

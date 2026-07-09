@@ -2156,6 +2156,102 @@ func TestBareElementDefaultsToStringValue(t *testing.T) {
 	require.NoError(t, err, string(output))
 }
 
+func TestParseGoAnyWildcardPreservesArbitraryXML(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "xgen-any-wildcard-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	inputDir := filepath.Join(tempDir, "xsd")
+	outputDir := filepath.Join(tempDir, "out")
+	require.NoError(t, os.MkdirAll(inputDir, 0o755))
+
+	schemaDoc := `<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+	xmlns:tns="http://example.com/any"
+	targetNamespace="http://example.com/any"
+	elementFormDefault="qualified">
+	<xs:element name="known" type="xs:string"/>
+	<xs:complexType name="ContainerType">
+		<xs:sequence>
+			<xs:any namespace="##any" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:ID" use="optional"/>
+	</xs:complexType>
+</xs:schema>`
+
+	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "any-wildcard.xsd"), []byte(schemaDoc), 0o644))
+
+	parser := NewParser(&Options{
+		FilePath:            filepath.Join(inputDir, "any-wildcard.xsd"),
+		InputDir:            inputDir,
+		OutputDir:           outputDir,
+		Lang:                "Go",
+		Package:             "schema",
+		IncludeMap:          make(map[string]bool),
+		LocalNameNSMap:      make(map[string]string),
+		NSSchemaLocationMap: make(map[string]string),
+		ParseFileList:       make(map[string]bool),
+		ParseFileMap:        make(map[string][]interface{}),
+		ProtoTree:           make([]interface{}, 0),
+		RemoteSchema:        make(map[string][]byte),
+	})
+	require.NoError(t, parser.Parse())
+
+	generated, err := os.ReadFile(filepath.Join(outputDir, "any-wildcard.xsd.go"))
+	require.NoError(t, err)
+	code := string(generated)
+	assert.Contains(t, code, "type TnsAny struct")
+	assert.Contains(t, code, "[]TnsAny `xml:\",any\"`")
+
+	goMod := "module schema\n\ngo 1.22\n"
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte(goMod), 0o644))
+	runtimeTest := `package schema
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+)
+
+func TestWildcardMarshalUnmarshal(t *testing.T) {
+	value := TnsContainerType{
+		IdAttr: ptr("container"),
+		Any: []TnsAny{{Value: TnsKnown("hello")}},
+	}
+	output, err := xml.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "<known xmlns=\"http://example.com/any\">hello</known>") {
+		t.Fatalf("unexpected output: %s", output)
+	}
+
+	var decoded TnsContainerType
+	input := "<TnsContainerType id=\"container\"><custom xmlns=\"urn:custom\" answer=\"42\"><nested>value</nested></custom></TnsContainerType>"
+	if err := xml.Unmarshal([]byte(input), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Any) != 1 {
+		t.Fatalf("expected one wildcard element, got %d", len(decoded.Any))
+	}
+	if decoded.Any[0].XMLName.Space != "urn:custom" || decoded.Any[0].XMLName.Local != "custom" {
+		t.Fatalf("unexpected wildcard name: %#v", decoded.Any[0].XMLName)
+	}
+	if !strings.Contains(decoded.Any[0].InnerXML, "<nested>value</nested>") {
+		t.Fatalf("unexpected inner XML: %s", decoded.Any[0].InnerXML)
+	}
+}
+
+func ptr(value string) *string { return &value }
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "any_wildcard_runtime_test.go"), []byte(runtimeTest), 0o644))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func TestParseGoUnionValidationCoversEnumAndPatternMembers(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "xgen-union-pattern-validation-*")
 	require.NoError(t, err)
